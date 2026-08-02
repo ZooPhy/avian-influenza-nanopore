@@ -1,0 +1,29 @@
+# Input and output
+reads_dir: "data"
+results_dir: "results"
+
+# Coverage
+coverage_min_depth: 50
+
+# Porechop resources
+porechop_mem_mb: 64000
+porechop_time_min: 240
+
+# IRMA
+irma_image: "docker://ghcr.io/cdcgov/irma:latest"
+irma_module: "FLU-minion"
+
+# BLAST
+blast_db: "data/flu_db/flu"
+
+# Medaka
+# Set this to the model matching the ONT chemistry/basecaller used.
+# Leave null temporarily to preserve the current behavior.
+medaka_model: null
+
+# fastplong
+fastplong_mean_quality: 10
+fastplong_min_length: 500
+
+# GenoFLU
+run_genoflu: true
