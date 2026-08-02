@@ -1,0 +1,13 @@
+channels:
+  - conda-forge
+  - bioconda
+
+dependencies:
+  - python=3.8
+  - pip
+  - samtools
+  - minimap2
+  - bcftools
+  - htslib
+  - pip:
+    - medaka==2.1.0

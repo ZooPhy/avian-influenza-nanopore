@@ -1,0 +1,12 @@
+use-conda: true
+use-singularity: true
+printshellcmds: true
+latency-wait: 300
+rerun-incomplete: true
+conda-cleanup-pkgs: cache
+
+cores: 4
+
+resources:
+  mem_mb: 200000
+  kaleido: 1

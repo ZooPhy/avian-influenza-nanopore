@@ -1,0 +1,33 @@
+# Snakemake
+.snakemake/
+snakemake.out
+snakemake.err
+
+# Results and input data
+results/
+data/*.fastq
+data/*.fastq.gz
+data/*.fq
+data/*.fq.gz
+
+# Reference databases
+data/flu_db/
+*.nhr
+*.nin
+*.nsq
+*.ndb
+*.not
+*.ntf
+*.nto
+
+# Conda and environments
+.conda/
+.env/
+venv/
+__pycache__/
+*.pyc
+
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store

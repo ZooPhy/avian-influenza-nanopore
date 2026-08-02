@@ -1,0 +1,7 @@
+name: coverage
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - pysam
+  - numpy

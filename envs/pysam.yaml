@@ -1,0 +1,8 @@
+name: pysam_env
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pysam
+  - numpy
