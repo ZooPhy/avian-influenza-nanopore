@@ -12,3 +12,7 @@ dependencies:
   - jinja2
   - pyyaml
   - quarto
+  - jupyter
+  - nbformat
+  - ipykernel
+  - papermill

@@ -1,0 +1,258 @@
+---
+title: "Avian Influenza Nanopore Sample Report"
+format:
+  html:
+    toc: true
+    toc-location: left
+    embed-resources: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+```{python}
+#| tags: [parameters]
+
+sample_id = None
+summary_file = None
+coverage_file = None
+blast_file = None
+coverage_threshold = 50
+```
+
+```{python}
+from pathlib import Path
+
+import pandas as pd
+import plotly.express as px
+from IPython.display import HTML, Markdown, display
+
+summary_file = Path(summary_file)
+coverage_file = Path(coverage_file)
+blast_file = Path(blast_file)
+
+summary = pd.read_csv(
+    summary_file,
+    sep="\t",
+    keep_default_na=False,
+)
+
+coverage = pd.read_csv(
+    coverage_file,
+    sep="\t",
+    keep_default_na=False,
+)
+
+blast = pd.read_csv(
+    blast_file,
+    keep_default_na=False,
+)
+
+if summary.empty:
+    raise ValueError(f"Summary table is empty: {summary_file}")
+
+row = summary.iloc[0]
+```
+
+## Sample
+
+```{python}
+display(Markdown(f"### `{sample_id}`"))
+```
+
+## Analytical overview
+
+```{python}
+review_flags = str(row["review_flags"])
+
+if review_flags == "NONE":
+    review_text = "No review flags were generated."
+else:
+    review_text = review_flags.replace(";", ", ")
+
+overview = pd.DataFrame(
+    {
+        "Metric": [
+            "Segments detected",
+            "Segments passing coverage",
+            "Consensus segments",
+            "H5N1 screen",
+            "GenoFLU status",
+            "Review flags",
+        ],
+        "Value": [
+            row["segments_detected"],
+            row["segments_pass"],
+            row["consensus_segments"],
+            row["h5n1_screen"],
+            row["genoflu_status"],
+            review_text,
+        ],
+    }
+)
+
+display(HTML(overview.to_html(index=False, escape=False)))
+```
+
+## Read processing
+
+```{python}
+read_metrics = pd.DataFrame(
+    {
+        "Metric": [
+            "Reads before filtering",
+            "Reads after filtering",
+            "Reads removed",
+            "Bases before filtering",
+            "Bases after filtering",
+            "Q20 rate before",
+            "Q20 rate after",
+            "Q30 rate before",
+            "Q30 rate after",
+            "Reads with adapters",
+        ],
+        "Value": [
+            row["reads_before"],
+            row["reads_after"],
+            int(row["reads_before"]) - int(row["reads_after"]),
+            row["bases_before"],
+            row["bases_after"],
+            f'{float(row["q20_rate_before"]) * 100:.1f}%',
+            f'{float(row["q20_rate_after"]) * 100:.1f}%',
+            f'{float(row["q30_rate_before"]) * 100:.1f}%',
+            f'{float(row["q30_rate_after"]) * 100:.1f}%',
+            row["reads_with_adapters"],
+        ],
+    }
+)
+
+display(HTML(read_metrics.to_html(index=False)))
+```
+
+## Segment coverage
+
+```{python}
+coverage_display = coverage[
+    [
+        "segment",
+        "contig",
+        "length",
+        "median_depth",
+        "mean_depth",
+        "breadth_covered",
+        "coverage_flag",
+    ]
+].copy()
+
+coverage_display.columns = [
+    "Segment",
+    "IRMA contig",
+    "Length",
+    "Median depth",
+    "Mean depth",
+    "Breadth covered",
+    "Status",
+]
+
+coverage_display["Breadth covered"] = coverage_display[
+    "Breadth covered"
+].map(lambda value: f"{float(value) * 100:.1f}%")
+
+display(HTML(coverage_display.to_html(index=False)))
+```
+
+```{python}
+coverage_plot = coverage.copy()
+coverage_plot["status"] = coverage_plot["coverage_flag"]
+
+fig = px.bar(
+    coverage_plot,
+    x="segment",
+    y="median_depth",
+    color="status",
+    title="Median coverage depth by segment",
+    labels={
+        "segment": "Segment",
+        "median_depth": "Median depth",
+        "status": "Coverage status",
+    },
+)
+
+fig.add_hline(
+    y=float(coverage_threshold),
+    line_dash="dash",
+    annotation_text=f"Coverage threshold: {float(coverage_threshold):g}x",
+)
+
+fig.show()
+```
+
+## Influenza subtype evidence
+
+```{python}
+subtype_table = pd.DataFrame(
+    {
+        "Feature": [
+            "HA contig",
+            "NA contig",
+            "HA median depth",
+            "NA median depth",
+            "H5N1 screen",
+        ],
+        "Value": [
+            row["ha_contig"],
+            row["na_contig"],
+            row["ha_median_depth"],
+            row["na_median_depth"],
+            row["h5n1_screen"],
+        ],
+    }
+)
+
+display(HTML(subtype_table.to_html(index=False)))
+```
+
+## BLAST top hits
+
+```{python}
+blast_display = blast.copy()
+blast_display.columns = ["Sample", "Segment", "Top BLAST hit"]
+
+display(HTML(blast_display.to_html(index=False)))
+```
+
+## Interpretation
+
+```{python}
+interpretation = []
+
+if int(row["segments_pass"]) == 8:
+    interpretation.append(
+        "All eight influenza A segments passed the configured coverage threshold."
+    )
+else:
+    interpretation.append(
+        f'{int(row["segments_pass"])} of 8 influenza A segments passed the '
+        "configured coverage threshold."
+    )
+
+if row["h5n1_screen"] == "PASS":
+    interpretation.append(
+        "The sample met the pipeline's IRMA-supported H5N1 screening criterion."
+    )
+else:
+    interpretation.append(
+        "The sample did not meet the pipeline's H5N1 screening criterion."
+    )
+
+if str(row["failed_segment_names"]) != "NONE":
+    failed = str(row["failed_segment_names"]).replace(",", ", ")
+    interpretation.append(f"Segments requiring review: {failed}.")
+
+display(Markdown("\n".join(f"- {item}" for item in interpretation)))
+```
+
+> **Interpretation note:** The H5N1 result is an IRMA-supported analytical screening flag. It is not an independent confirmatory subtype test and should be interpreted with coverage, controls, sequence quality, and other samples from the sequencing run.

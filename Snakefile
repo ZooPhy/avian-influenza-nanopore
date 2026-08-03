@@ -276,25 +276,36 @@ def blast_db_files(_wildcards):
 # Final targets
 # -----------------------------------------------------------------------------
 FINAL_TARGETS = [
-    *expand(f"{RESULTS}/{{sample}}/irma/project", sample=SAMPLES),
-    *expand(f"{RESULTS}/{{sample}}/coverage/coverage.tsv", sample=SAMPLES),
-    *expand(f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv", sample=SAMPLES),
-    *expand(
+    expand(f"{RESULTS}/{{sample}}/irma/project", sample=SAMPLES),
+    expand(f"{RESULTS}/{{sample}}/coverage/coverage.tsv", sample=SAMPLES),
+    expand(f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv", sample=SAMPLES),
+    expand(
         f"{RESULTS}/{{sample}}/merged/consensus_all_segments.fasta",
+        sample=SAMPLES,
+    ),
+    expand(
+        f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.tsv",
+        sample=SAMPLES,
+    ),
+    expand(
+        f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.html",
         sample=SAMPLES,
     ),
 ]
 
 if RUN_GENOFLU:
     FINAL_TARGETS.extend(
-        expand(f"{RESULTS}/{{sample}}/genoflu/GenoFLU.tsv", sample=SAMPLES)
+        expand(
+            f"{RESULTS}/{{sample}}/genoflu/GenoFLU.tsv",
+            sample=SAMPLES,
+        )
     )
 
 
 rule all:
     input:
         FINAL_TARGETS
-
+	
 
 # -----------------------------------------------------------------------------
 # NanoPlot
@@ -883,6 +894,70 @@ rule detect_h5n1:
             f"H5N1_screen={'PASS' if passed else 'FAIL'}\n"
         )
 
+
+# -----------------------------------------------------------------------------
+# Produce the summary of the individual samples
+# -----------------------------------------------------------------------------
+rule sample_summary:
+    input:
+        fastplong=f"{RESULTS}/{{sample}}/fastplong/report.json",
+        coverage=f"{RESULTS}/{{sample}}/coverage/coverage.tsv",
+        blast=f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv",
+        h5n1=f"{RESULTS}/{{sample}}/genoflu/h5n1.flag",
+        genoflu=f"{RESULTS}/{{sample}}/genoflu/GenoFLU.tsv",
+        consensus=f"{RESULTS}/{{sample}}/merged/consensus_all_segments.fasta"
+    output:
+        tsv=f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.tsv"
+    conda:
+        "envs/reporting.yaml"
+    script:
+        "scripts/sample_summary.py"
+        
+
+# -----------------------------------------------------------------------------
+# Produce the summary of the individual samples in html
+# -----------------------------------------------------------------------------
+rule sample_summary_html:
+    input:
+        summary=f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.tsv",
+        coverage=f"{RESULTS}/{{sample}}/coverage/coverage.tsv",
+        blast=f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv"
+    output:
+        html=f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.html"
+    params:
+        template="scripts/sample_summary.qmd",
+        coverage_threshold=COVERAGE_MIN
+    conda:
+        "envs/reporting.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+
+        output_dir="$(cd "$(dirname {output.html:q})" && pwd)"
+        summary_abs="$(cd "$(dirname {input.summary:q})" && pwd)/$(basename {input.summary:q})"
+        coverage_abs="$(cd "$(dirname {input.coverage:q})" && pwd)/$(basename {input.coverage:q})"
+        blast_abs="$(cd "$(dirname {input.blast:q})" && pwd)/$(basename {input.blast:q})"
+        template_abs="$(cd "$(dirname {params.template:q})" && pwd)/$(basename {params.template:q})"
+
+        temp_qmd="$output_dir/.sample_summary.qmd"
+        cp "$template_abs" "$temp_qmd"
+
+        (
+            cd "$output_dir"
+
+            quarto render ".sample_summary.qmd" \
+              --to html \
+              --output "{wildcards.sample}.sample_summary.html" \
+              -P "sample_id:{wildcards.sample}" \
+              -P "summary_file:${{summary_abs}}" \
+              -P "coverage_file:${{coverage_abs}}" \
+              -P "blast_file:${{blast_abs}}" \
+              -P "coverage_threshold:{params.coverage_threshold}"
+        )
+
+        rm -f "$temp_qmd"
+        rm -rf "$output_dir/.sample_summary_files"
+        """
 
 # -----------------------------------------------------------------------------
 # GenoFLU, gated by the H5N1 screen
