@@ -33,3 +33,11 @@ __pycache__/
 .DS_Store
 config.yaml
 resources/flu_db/
+
+# Local installer
+Miniforge3.sh
+
+# Downloaded/generated influenza reference resources
+resources/fluA_reference.fasta
+resources/fluA_reference.fasta.zip
+resources/flu_db/
