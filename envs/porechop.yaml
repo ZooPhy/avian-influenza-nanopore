@@ -1,6 +1,9 @@
 name: porechop
+
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
+
 dependencies:
-  - porechop
+  - python=3.10
+  - porechop_abi=0.5.1

@@ -32,3 +32,4 @@ __pycache__/
 *.tmp
 .DS_Store
 config.yaml
+resources/flu_db/
