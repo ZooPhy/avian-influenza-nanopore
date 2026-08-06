@@ -821,10 +821,3 @@ Planned or under-development enhancements include:
 - Automated public-health narrative summaries
 - Additional export formats, including PDF
 
-## License
-
-Add the project license selected for this repository.
-
-## Citation
-
-Add a `CITATION.cff` file after the repository version, authorship, and preferred citation are finalized.
