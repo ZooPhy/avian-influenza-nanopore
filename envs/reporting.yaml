@@ -16,3 +16,10 @@ dependencies:
   - nbformat
   - ipykernel
   - papermill
+  - r-base
+  - r-dt
+  - r-readr
+  - r-dplyr
+  - r-ggplot2
+  - r-plotly
+  - r-gt

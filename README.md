@@ -1,8 +1,8 @@
-# Avian Influenza Nanopore Pipeline
+# ESCAPE
 
-A portable Snakemake workflow for processing Oxford Nanopore sequencing reads from avian influenza A virus samples.
+**Enhanced Sequencing and Characterization of Avian Pathogens Engine**
 
-The pipeline performs adapter trimming, long-read quality filtering, IRMA assembly, segment-level coverage assessment, Medaka polishing and variant calling, BLAST-based segment identification, H5N1 screening, and GenoFLU analysis.
+ESCAPE is a portable Snakemake workflow for genomic analysis of avian influenza A virus from Oxford Nanopore sequencing reads. It performs read preprocessing, influenza assembly, segment-level quality assessment, consensus polishing, variant calling, subtype screening, genotype assignment, annotation, and generation of interactive HTML reports.
 
 The workflow has been validated on:
 
@@ -10,6 +10,23 @@ The workflow has been validated on:
 - Linux ARM64 on a SLURM cluster using Snakemake, Conda, and Apptainer or Singularity
 
 Most tools run in rule-specific Conda environments. IRMA runs in a container selected for the host environment.
+
+## Features
+
+- Oxford Nanopore influenza A analysis
+- Porechop ABI adapter trimming
+- `fastplong` read-quality and length filtering
+- IRMA `FLU-minion` assembly
+- Segment-level coverage assessment
+- Medaka consensus polishing and variant calling
+- BLAST-based segment identification
+- H5N1 analytical screening
+- GenoFLU genotype assignment
+- VADR sequence annotation and validation
+- Interactive sample-level HTML reports
+- Interactive sequencing-run summary report
+- Apple Silicon and Linux ARM64 support
+- Docker, Apptainer, Singularity, or local IRMA execution
 
 ## Workflow
 
@@ -46,7 +63,15 @@ BLAST segment identification
 H5N1 screening
     |
     v
-GenoFLU
+GenoFLU genotype assignment
+    |
+    v
+VADR annotation and validation
+    |
+    v
+Interactive HTML reports
+    +--> Sample report
+    +--> Run summary report
 ```
 
 NanoPlot is also available as an optional raw-read quality-control target.
@@ -73,7 +98,14 @@ NanoPlot is also available as an optional raw-read quality-control target.
 │   ├── build_blast_db.sh
 │   ├── check_coverage.py
 │   ├── coverage_table.py
-│   └── summarize_blast.py
+│   ├── normalize_irma_outputs.py
+│   ├── summarize_blast.py
+│   ├── sample_summary.qmd
+│   ├── run_summary.qmd
+│   └── report/
+│       ├── escape-report.html
+│       ├── escape-report.js
+│       └── sample-report.css
 ├── profiles/
 │   └── slurm-arm/
 ├── data/                             # input FASTQ files; not committed
@@ -111,6 +143,23 @@ The validated macOS configuration uses:
 - native `osx-arm64` Conda environments for non-IRMA rules
 
 Docker Desktop must be installed and running before IRMA executes.
+
+#### Docker Desktop memory
+
+Large or highly multiplexed influenza datasets can require substantially more memory than the Docker Desktop default. A low Docker memory limit can cause IRMA preprocessing to be killed even when the host Mac has ample RAM.
+
+For a high-memory Apple Silicon workstation, a validated configuration is approximately:
+
+- Memory: 96 GB
+- Swap: 4 GB or more
+
+Choose values appropriate for the physical RAM available on the host. Leave sufficient memory for macOS and other applications. Verify the memory visible inside Docker with:
+
+```bash
+docker run --rm alpine sh -c 'free -h'
+```
+
+ESCAPE now checks the IRMA log and expected outputs after execution. Internal failures such as a killed process, an out-of-memory condition, or `found no QC'd data` cause the workflow to stop instead of continuing to downstream reports.
 
 ### Linux ARM64 cluster
 
@@ -406,12 +455,12 @@ snakemake \
   --configfile config.yaml \
   --sdm conda \
   --cores 4 \
-  --resources mem_mb=16000 kaleido=1 \
+  --resources mem_mb=90000 kaleido=1 \
   --printshellcmds \
   --rerun-incomplete
 ```
 
-Snakemake reuses completed outputs automatically when the command is rerun after a failure or interruption.
+Snakemake reuses completed outputs automatically when the command is rerun after a failure or interruption. The `mem_mb` value is a Snakemake scheduling resource; it does not configure Docker Desktop memory. Docker resources must be configured separately in Docker Desktop.
 
 ### Run NanoPlot optionally
 
@@ -480,21 +529,27 @@ results/<sample>/
 ├── porechop/
 ├── fastplong/
 ├── irma/
+│   ├── project/
+│   ├── segments/
+│   ├── manifest.tsv
+│   └── irma.log
 ├── coverage/
 ├── coverage_flags/
 ├── coverage_stats/
 ├── medaka/
 ├── blast/
-├── summary/
 ├── merged/
-└── genoflu/
+├── genoflu/
+├── vadr/
+└── summary/
 ```
 
-Important outputs include:
+Important sample outputs include:
 
 ```text
 results/<sample>/fastplong/report.html
-results/<sample>/irma/project/
+results/<sample>/irma/manifest.tsv
+results/<sample>/irma/segments/<segment>/consensus.fasta
 results/<sample>/coverage/coverage.tsv
 results/<sample>/coverage_stats/<segment>.tsv
 results/<sample>/medaka/<segment>/consensus.fasta
@@ -504,7 +559,50 @@ results/<sample>/summary/blast_top_hits.csv
 results/<sample>/merged/consensus_all_segments.fasta
 results/<sample>/genoflu/h5n1.flag
 results/<sample>/genoflu/GenoFLU.tsv
+results/<sample>/vadr/<sample>.vadr.log
+results/<sample>/summary/<sample>.sample_summary.tsv
+results/<sample>/summary/<sample>.sample_summary.html
 ```
+
+The sequencing-run report is written to:
+
+```text
+results/run_summary/run_summary.html
+```
+
+## Reports
+
+### Sample report
+
+Each sample report summarizes read filtering, segment recovery, coverage, BLAST assignments, H5N1 screening, GenoFLU results, VADR status, and review flags. The report is self-contained HTML and can be opened locally in a web browser.
+
+Build one sample report with:
+
+```bash
+snakemake \
+  --configfile config.yaml \
+  --sdm conda \
+  --cores 4 \
+  --resources mem_mb=90000 kaleido=1 \
+  --rerun-incomplete \
+  results/<sample>/summary/<sample>.sample_summary.html
+```
+
+### Run summary report
+
+The run summary combines all configured samples into a single HTML dashboard. Build it with:
+
+```bash
+snakemake \
+  --configfile config.yaml \
+  --sdm conda \
+  --cores 4 \
+  --resources mem_mb=90000 kaleido=1 \
+  --rerun-incomplete \
+  results/run_summary/run_summary.html
+```
+
+Because the run summary depends on all sample reports, target an individual sample report when rerunning only one barcode.
 
 ## Coverage criterion
 
@@ -564,6 +662,61 @@ docker info
 ```
 
 Then rerun the complete Snakemake command. Completed upstream files will be reused.
+
+### IRMA is killed or reports no QC'd data
+
+Messages may include:
+
+```text
+Killed
+found no QC'd data
+```
+
+This commonly indicates that the container runtime did not have enough memory. On macOS, increase Docker Desktop memory, restart Docker Desktop, remove the affected sample's incomplete IRMA and downstream outputs, and rerun only that sample report target.
+
+Check Docker memory with:
+
+```bash
+docker run --rm alpine sh -c 'free -h'
+```
+
+Monitor the affected sample with:
+
+```bash
+tail -f results/<sample>/irma/irma.log
+```
+
+The workflow should stop on these failures rather than interpreting them as a biological negative result.
+
+### Rerun one sample after an IRMA failure
+
+Remove only that sample's IRMA and downstream outputs:
+
+```bash
+rm -rf \
+  results/<sample>/irma \
+  results/<sample>/coverage \
+  results/<sample>/coverage_flags \
+  results/<sample>/coverage_stats \
+  results/<sample>/medaka \
+  results/<sample>/blast \
+  results/<sample>/merged \
+  results/<sample>/genoflu \
+  results/<sample>/vadr \
+  results/<sample>/summary
+```
+
+Then target only that sample's HTML report:
+
+```bash
+snakemake \
+  --configfile config.yaml \
+  --sdm conda \
+  --cores 4 \
+  --resources mem_mb=90000 kaleido=1 \
+  --rerun-incomplete \
+  results/<sample>/summary/<sample>.sample_summary.html
+```
 
 ### BLAST database files are not found
 
@@ -640,6 +793,33 @@ resources/flu_db/
 *.log
 .DS_Store
 ```
+
+## Acknowledgements
+
+ESCAPE integrates or builds on the following projects:
+
+- Snakemake
+- CDC IRMA
+- Porechop ABI
+- fastplong
+- Medaka
+- NCBI BLAST+
+- GenoFLU
+- VADR
+- NanoPlot
+- Oxford Nanopore Technologies sequencing software and file formats
+
+Please cite the underlying tools used in an analysis according to their respective documentation and publications.
+
+## Roadmap
+
+Planned or under-development enhancements include:
+
+- Expanded interactive run-level visualizations
+- Segment-recovery and coverage heatmaps
+- Improved genotype visualizations
+- Automated public-health narrative summaries
+- Additional export formats, including PDF
 
 ## License
 

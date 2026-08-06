@@ -1,182 +1,217 @@
 #!/usr/bin/env python3
-from pathlib import Path
+"""Compute segment coverage directly from a normalized IRMA BAM."""
+
+
 import csv
-import re
-import statistics as stats
-from typing import Optional
+import statistics
+from pathlib import Path
+
+import pysam
 
 
-def norm_col(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+def read_manifest_row(manifest_path: Path, segment: str) -> dict[str, str]:
+    if not manifest_path.is_file():
+        return {}
+    with manifest_path.open(encoding="utf-8", errors="replace") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            if row.get("segment") == segment:
+                return row
+    return {}
 
 
-def find_depth_column(header_row):
-    """Find a sensible depth column in an IRMA coverage table header."""
-    norm = [norm_col(c) for c in header_row]
-    for key in ("coverage_depth", "depth", "read_depth", "readdepth"):
-        if key in norm:
-            return norm.index(key)
-    raise ValueError(f"Could not find a depth column in header: {header_row}")
-
-
-def read_depths(table_path: Path):
-    """Read numeric depth values from a coverage table."""
-    with open(table_path) as f:
-        rdr = csv.reader(f, delimiter="\t")
-        hdr = next(r for r in rdr if r)
-        dcol = find_depth_column(hdr)
-
-        depths = []
-        for r in rdr:
-            if not r or dcol >= len(r):
-                continue
-            v = r[dcol].strip()
-            if not v or v.upper() == "NA":
-                continue
-            try:
-                depths.append(float(v))
-            except ValueError:
-                continue
-
-    if not depths:
-        raise ValueError(f"No numeric depth values found in {table_path}")
-    return depths
-
-
-def derive_irma_key_from_segment_file(seg_file: Optional[Path], segment: str) -> Optional[str]:
-    """
-    Given a segment FASTA/BAM like:
-      A_HA_H5.fasta  -> key = A_HA_H5
-      A_NA_N1.bam    -> key = A_NA_N1
-      A_PB2.fasta    -> key = A_PB2
-    Returns None if it can't parse or seg_file is missing.
-    """
-    if seg_file is None:
-        return None
-    # IMPORTANT: optional() may hand us a placeholder that doesn't exist.
-    if not seg_file.exists():
-        return None
-
-    # Match: A_<segment> or A_<segment>_<subtype>, up to the file extension
-    m = re.search(rf"^(A_{re.escape(segment)}(?:_[A-Za-z0-9]+)?)\.", seg_file.name)
-    return m.group(1) if m else None
-
-
-def write_outputs(flag_out: Path, stats_out: Path, segment: str, min_med: float,
-                  status: str, chosen: str = "NA", n: int = 0,
-                  median="NA", mean="NA", dmin="NA", dmax="NA",
-                  n_candidates: int = 0, reason: str = ""):
+def write_outputs(
+    flag_out: Path,
+    stats_out: Path,
+    *,
+    segment: str,
+    threshold: float,
+    status: str,
+    contig: str = "NA",
+    positions: int = 0,
+    median: str = "NA",
+    mean: str = "NA",
+    minimum: str = "NA",
+    maximum: str = "NA",
+    breadth: str = "NA",
+    candidate_count: int = 0,
+    reason: str = "",
+) -> None:
     flag_out.parent.mkdir(parents=True, exist_ok=True)
     stats_out.parent.mkdir(parents=True, exist_ok=True)
+    flag_out.write_text(f"{status}\n", encoding="utf-8")
 
-    with open(flag_out, "w") as f:
-        f.write(f"{status}\n")
+    fieldnames = [
+        "segment",
+        "chosen_table",
+        "selected_contig",
+        "positions",
+        "median_depth",
+        "mean_depth",
+        "min_depth",
+        "max_depth",
+        "breadth_covered",
+        "threshold",
+        "status",
+        "n_candidates",
+        "selection_reason",
+    ]
+    row = {
+        "segment": segment,
+        # Retained for compatibility with the H5N1 screen and existing reports.
+        "chosen_table": contig,
+        "selected_contig": contig,
+        "positions": positions,
+        "median_depth": median,
+        "mean_depth": mean,
+        "min_depth": minimum,
+        "max_depth": maximum,
+        "breadth_covered": breadth,
+        "threshold": f"{threshold:.2f}",
+        "status": status,
+        "n_candidates": candidate_count,
+        "selection_reason": reason,
+    }
+    with stats_out.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        writer.writerow(row)
 
-    with open(stats_out, "w") as f:
-        f.write(
-            "segment\tchosen_table\tpositions\tmedian_depth\tmean_depth\tmin_depth\tmax_depth\t"
-            "threshold\tstatus\tn_candidates\tselection_reason\n"
+
+def depths_without_index(bam: pysam.AlignmentFile) -> tuple[list[int], str]:
+    """Compute per-position depth by streaming a BAM without requiring an index."""
+    references = list(bam.references)
+    lengths = list(bam.lengths)
+    depth_by_reference = {
+        reference: [0] * length for reference, length in zip(references, lengths)
+    }
+
+    for read in bam.fetch(until_eof=True):
+        if read.is_unmapped or read.reference_id < 0:
+            continue
+        reference = bam.get_reference_name(read.reference_id)
+        values = depth_by_reference.get(reference)
+        if values is None:
+            continue
+        for position in read.get_reference_positions(full_length=False):
+            if position is not None and 0 <= position < len(values):
+                values[position] += 1
+
+    all_depths: list[int] = []
+    for reference in references:
+        all_depths.extend(depth_by_reference[reference])
+    contig = references[0] if len(references) == 1 else ",".join(references)
+    return all_depths, contig
+
+
+def depths_with_index(bam: pysam.AlignmentFile) -> tuple[list[int], str]:
+    all_depths: list[int] = []
+    for reference, length in zip(bam.references, bam.lengths):
+        a, c, g, t = bam.count_coverage(reference, start=0, stop=length, quality_threshold=0)
+        all_depths.extend(
+            int(a[index] + c[index] + g[index] + t[index])
+            for index in range(length)
         )
-        f.write(
-            f"{segment}\t{chosen}\t{n}\t{median}\t{mean}\t{dmin}\t{dmax}\t"
-            f"{min_med:.2f}\t{status}\t{n_candidates}\t{reason}\n"
-        )
+    contig = bam.references[0] if len(bam.references) == 1 else ",".join(bam.references)
+    return all_depths, contig
 
 
-def main():
-    tables_dir = Path(snakemake.input.table_dir)
-    segment = snakemake.wildcards.segment
+def main() -> None:
+    segments_dir = Path(snakemake.input.segments_dir)
+    manifest_path = Path(snakemake.input.manifest)
+    segment = str(snakemake.wildcards.segment)
     flag_out = Path(snakemake.output.flag)
     stats_out = Path(snakemake.output.stats)
-    min_med = float(snakemake.params.min_median_depth)
+    threshold = float(snakemake.params.min_median_depth)
 
-    # segment_file is optional in Snakefile
-    seg_file = None
-    if hasattr(snakemake.input, "segment_file") and snakemake.input.segment_file:
-        seg_file = Path(snakemake.input.segment_file)
+    manifest_row = read_manifest_row(manifest_path, segment)
+    manifest_status = manifest_row.get("status", "MISSING")
+    contig = manifest_row.get("contig") or "NA"
+    candidate_count = int(manifest_row.get("candidate_count") or 0)
+    bam_path = segments_dir / segment / "alignment.bam"
 
-    # Candidate tables (HA/NA families can have multiple subtypes)
-    cands = sorted(tables_dir.glob(f"A_{segment}*-coverage.txt"))
-    if not cands:
-        cands = sorted(tables_dir.glob(f"*_{segment}*-coverage.txt"))
-
-    if not cands:
+    if manifest_status != "READY" or not bam_path.is_file() or bam_path.stat().st_size == 0:
         write_outputs(
-            flag_out, stats_out, segment, min_med,
-            status="MISSING", n_candidates=0,
-            reason=f"no coverage tables in {tables_dir}"
+            flag_out,
+            stats_out,
+            segment=segment,
+            threshold=threshold,
+            status="MISSING",
+            contig=contig,
+            candidate_count=candidate_count,
+            reason=f"normalized segment status={manifest_status}; usable BAM unavailable",
         )
-        print(f"[check_coverage] {segment}: no coverage tables in {tables_dir} -> MISSING")
+        print(f"[check_coverage] {segment}: no usable normalized BAM -> MISSING")
         return
 
-    chosen = None
-    reason = ""
-
-    # 1) Best: match subtype-specific table to the actual IRMA segment FASTA used downstream
-    key = derive_irma_key_from_segment_file(seg_file, segment)
-    if key:
-        matches = [p for p in cands if p.name.startswith(key) and p.name.endswith("-coverage.txt")]
-        if len(matches) == 1:
-            chosen = matches[0]
-            reason = f"matched segment_file ({seg_file.name}) -> {key}"
-        elif len(matches) > 1:
-            chosen = matches[0]
-            reason = f"multiple tables matched {key}; picked first"
-        else:
-            reason = f"no table matched {key}; will fallback"
-
-    # 2) If only one candidate overall, use it
-    if chosen is None and len(cands) == 1:
-        chosen = cands[0]
-        reason = "single candidate"
-
-    # 3) Fallback: pick table with highest median depth
-    if chosen is None:
-        best = None
-        best_med = None
-        for p in cands:
+    try:
+        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+            if not bam.references:
+                raise ValueError("BAM has no reference sequences")
             try:
-                depths = read_depths(p)
-                med = stats.median(depths)
-            except Exception:
-                continue
-            if best is None or med > best_med:
-                best = p
-                best_med = med
+                has_index = bam.has_index()
+            except (ValueError, OSError):
+                has_index = False
+            if has_index:
+                depths, bam_contig = depths_with_index(bam)
+                method = "pysam count_coverage using BAM index"
+            else:
+                depths, bam_contig = depths_without_index(bam)
+                method = "streamed BAM alignments without index"
+    except Exception as exc:
+        write_outputs(
+            flag_out,
+            stats_out,
+            segment=segment,
+            threshold=threshold,
+            status="ERROR",
+            contig=contig,
+            candidate_count=candidate_count,
+            reason=f"could not read normalized BAM: {exc}",
+        )
+        print(f"[check_coverage] {segment}: BAM error -> ERROR: {exc}")
+        return
 
-        if best is None:
-            write_outputs(
-                flag_out, stats_out, segment, min_med,
-                status="AMBIGUOUS", n_candidates=len(cands),
-                reason="candidates exist but none parseable"
-            )
-            print(f"[check_coverage] {segment}: {len(cands)} tables but none parseable -> AMBIGUOUS")
-            return
+    if not depths:
+        write_outputs(
+            flag_out,
+            stats_out,
+            segment=segment,
+            threshold=threshold,
+            status="MISSING",
+            contig=contig,
+            candidate_count=candidate_count,
+            reason="BAM contained no reference positions",
+        )
+        print(f"[check_coverage] {segment}: no reference positions -> MISSING")
+        return
 
-        chosen = best
-        reason = "fallback: highest median depth"
-
-    # Compute stats & PASS/FAIL
-    depths = read_depths(chosen)
-    median = stats.median(depths)
+    median = statistics.median(depths)
     mean = sum(depths) / len(depths)
-    n = len(depths)
-    dmin = min(depths)
-    dmax = max(depths)
-
-    status = "PASS" if median >= min_med else "FAIL"
+    minimum = min(depths)
+    maximum = max(depths)
+    breadth = sum(depth > 0 for depth in depths) / len(depths)
+    status = "PASS" if median >= threshold else "FAIL"
+    selected_contig = contig if contig != "NA" else bam_contig
 
     write_outputs(
-        flag_out, stats_out, segment, min_med,
-        status=status, chosen=chosen.name, n=n,
-        median=f"{median:.2f}", mean=f"{mean:.2f}",
-        dmin=f"{dmin:.2f}", dmax=f"{dmax:.2f}",
-        n_candidates=len(cands), reason=reason
+        flag_out,
+        stats_out,
+        segment=segment,
+        threshold=threshold,
+        status=status,
+        contig=selected_contig,
+        positions=len(depths),
+        median=f"{median:.2f}",
+        mean=f"{mean:.2f}",
+        minimum=f"{minimum:.2f}",
+        maximum=f"{maximum:.2f}",
+        breadth=f"{breadth:.3f}",
+        candidate_count=candidate_count,
+        reason=f"coverage computed from normalized BAM; {method}",
     )
-
     print(
-        f"[check_coverage] {segment}: table={chosen.name} ({reason}); "
-        f"n={n} median={median:.2f} mean={mean:.2f} min={dmin:.2f} max={dmax:.2f} -> {status}"
+        f"[check_coverage] {segment}: contig={selected_contig}; positions={len(depths)}; "
+        f"median={median:.2f}; mean={mean:.2f}; breadth={breadth:.3f} -> {status}"
     )
 
 

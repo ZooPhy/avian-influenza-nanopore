@@ -13,11 +13,19 @@ configfile: "config.yaml"
 
 import csv
 import os
+import re
 import shlex
 import shutil
 import statistics as stats
 import subprocess
+import sys
 from pathlib import Path
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    SNAKEMAKE_VERSION = version("snakemake")
+except PackageNotFoundError:
+    SNAKEMAKE_VERSION = "Not captured"
 
 from snakemake.io import glob_wildcards
 
@@ -53,7 +61,20 @@ READ_PATTERN = str(config.get("reads_pattern", "{sample}.fastq.gz"))
 if "{sample}" not in READ_PATTERN:
     raise ValueError("config key 'reads_pattern' must contain the wildcard {sample}")
 
-READ_GLOB = os.path.join(READS, READ_PATTERN)
+
+def _discover_fastq_files(reads_dir: str):
+    paths = sorted(
+        (path for path in Path(reads_dir).glob("*.fastq.gz") if path.is_file()),
+        key=lambda path: path.name,
+    )
+    return {
+        path.name.removesuffix(".fastq.gz"): str(path)
+        for path in paths
+    }
+
+
+SAMPLE_FASTQ = _discover_fastq_files(READS)
+SAMPLES = sorted(SAMPLE_FASTQ)
 
 COVERAGE_MIN = float(config.get("coverage_min_depth", 50.0))
 
@@ -77,6 +98,13 @@ NANOPLOT_INSTALL_CHROME = as_bool(
     config.get("nanoplot_install_chrome", True)
 )
 RUN_GENOFLU = as_bool(config.get("run_genoflu", True))
+RUN_VADR = as_bool(config.get("run_vadr", True))
+RUN_SUMMARY = as_bool(config.get("run_summary", True))
+VADR_IMAGE = str(config.get("vadr_image", "docker://staphb/vadr:latest"))
+VADR_RUNTIME = str(config.get("vadr_runtime", "auto")).strip().lower()
+VADR_MKEY = str(config.get("vadr_mkey", "flu"))
+VADR_THREADS = int(config.get("vadr_threads", 1))
+VADR_FAIL_SOFT = as_bool(config.get("vadr_fail_soft", False))
 
 # Rule-level threads can be overridden in config or by a Snakemake profile.
 NANOPLOT_THREADS = int(config.get("nanoplot_threads", 1))
@@ -98,166 +126,71 @@ SEGMENT_ORDER = {
     "NS": 7,
 }
 
-# Discover samples from the configurable FASTQ pattern.
-SAMPLES = sorted(set(glob_wildcards(READ_GLOB).sample))
+# Discover samples directly from the FASTQ files in reads_dir.
 if not SAMPLES:
     print(
-        f"WARNING: no samples matched {READ_GLOB!r}. "
-        "Check reads_dir and reads_pattern in config.yaml."
+        f"WARNING: no *.fastq.gz files matched {READS!r}. "
+        "Check reads_dir in config.yaml."
     )
 
 
 # -----------------------------------------------------------------------------
-# Deterministic path and subtype-selection utilities
+# Stable normalized IRMA interface
 # -----------------------------------------------------------------------------
-def _sorted_rglob(base: Path, pattern: str):
-    return sorted(base.rglob(pattern), key=lambda path: path.as_posix())
+SEGMENT_SEQUENCE = ("HA", "NA", "PB2", "PB1", "PA", "NP", "MP", "NS")
 
 
-def _normalized_header(value: str):
-    return "_".join(
-        part for part in "".join(
-            char.lower() if char.isalnum() else " " for char in value
-        ).split()
-        if part
-    )
+def irma_segments_dir(wildcards):
+    """Return the normalized segment directory after the IRMA checkpoint."""
+    return str(checkpoints.irma.get(sample=wildcards.sample).output.segments)
 
 
-def _median_depth_from_coverage_table(table_path: Path):
-    """Return median depth from an IRMA coverage table, or None if unparseable."""
-    try:
-        with table_path.open() as handle:
-            reader = csv.reader(handle, delimiter="\t")
-            header = next(row for row in reader if row)
-            normalized = [_normalized_header(column) for column in header]
+def irma_manifest_path(wildcards):
+    """Return the normalized IRMA manifest after the checkpoint."""
+    return str(checkpoints.irma.get(sample=wildcards.sample).output.manifest)
 
-            depth_index = None
-            for key in ("coverage_depth", "depth", "read_depth", "readdepth"):
-                if key in normalized:
-                    depth_index = normalized.index(key)
-                    break
-            if depth_index is None:
-                return None
 
-            depths = []
-            for row in reader:
-                if not row or depth_index >= len(row):
-                    continue
-                value = row[depth_index].strip()
-                if not value or value.upper() == "NA":
-                    continue
-                try:
-                    depths.append(float(value))
-                except ValueError:
-                    continue
-
-        return stats.median(depths) if depths else None
-    except (OSError, StopIteration):
-        return None
+def _manifest_rows(wildcards):
+    manifest = Path(irma_manifest_path(wildcards))
+    if not manifest.is_file():
+        return []
+    with manifest.open(encoding="utf-8", errors="replace") as handle:
+        return list(csv.DictReader(handle, delimiter="\t"))
 
 
 def segments_for_sample(wildcards):
-    """Resolve segment families after the IRMA checkpoint completes."""
-    project = Path(checkpoints.irma.get(sample=wildcards.sample).output.project)
-    fastas = sorted(project.glob("A_*.fasta"), key=lambda path: path.name)
-
-    segments = set()
-    for fasta in fastas:
-        name = fasta.stem[2:]  # remove leading A_
-        if name in SEGSET:
-            segments.add(name)
-        elif name.startswith("HA"):
-            segments.add("HA")
-        elif name.startswith("NA"):
-            segments.add("NA")
-
-    return sorted(
-        segments,
-        key=lambda segment: (SEGMENT_ORDER.get(segment, 99), segment),
-    )
-
-
-def _selected_irma_stem(wildcards):
-    """
-    Select one IRMA contig consistently for a segment family.
-
-    For HA/NA with multiple subtype-specific outputs, choose the candidate whose
-    matching IRMA coverage table has the highest median depth. This keeps the BAM,
-    FASTA, coverage decision, Medaka, and downstream subtype screen aligned.
-    """
-    project = Path(checkpoints.irma.get(sample=wildcards.sample).output.project)
-    segment = wildcards.segment
-
-    exact_fasta = project / f"A_{segment}.fasta"
-    if exact_fasta.exists():
-        return exact_fasta.stem
-
-    candidates = sorted(project.glob(f"A_{segment}*.fasta"), key=lambda path: path.name)
-    if not candidates:
-        raise ValueError(
-            f"No IRMA FASTA found for sample={wildcards.sample}, segment={segment}"
-        )
-    if len(candidates) == 1:
-        return candidates[0].stem
-
-    table_dir = project / "tables"
-    scored = []
-    for fasta in candidates:
-        table = table_dir / f"{fasta.stem}-coverage.txt"
-        median = _median_depth_from_coverage_table(table)
-        if median is not None:
-            scored.append((median, fasta.stem))
-
-    if scored:
-        # Highest median depth; name is a deterministic tie-breaker.
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        return scored[0][1]
-
-    # Deterministic fallback if coverage tables are absent or unparseable.
-    return candidates[0].stem
+    """Return segments with both a normalized FASTA and BAM."""
+    segments_dir = Path(irma_segments_dir(wildcards))
+    ready = []
+    for row in _manifest_rows(wildcards):
+        segment = row.get("segment", "")
+        if row.get("status") != "READY" or segment not in SEGMENT_SEQUENCE:
+            continue
+        fasta = segments_dir / segment / "consensus.fasta"
+        bam = segments_dir / segment / "alignment.bam"
+        if fasta.is_file() and fasta.stat().st_size > 0 and bam.is_file() and bam.stat().st_size > 0:
+            ready.append(segment)
+    return sorted(ready, key=lambda segment: SEGMENT_SEQUENCE.index(segment))
 
 
 def bam_path(wildcards):
-    project = Path(checkpoints.irma.get(sample=wildcards.sample).output.project)
-    stem = _selected_irma_stem(wildcards)
-
-    exact = project / f"{stem}.bam"
-    if exact.exists():
-        return str(exact)
-
-    matches = _sorted_rglob(project, f"{stem}.bam")
-    if not matches:
+    path = Path(irma_segments_dir(wildcards)) / wildcards.segment / "alignment.bam"
+    if not path.is_file():
         raise ValueError(
-            f"No BAM found for sample={wildcards.sample}, segment={wildcards.segment}, "
-            f"selected_contig={stem}"
+            f"No normalized BAM found for sample={wildcards.sample}, "
+            f"segment={wildcards.segment}: {path}"
         )
-    return str(matches[0])
+    return str(path)
 
 
 def fasta_path(wildcards):
-    project = Path(checkpoints.irma.get(sample=wildcards.sample).output.project)
-    stem = _selected_irma_stem(wildcards)
-
-    exact = project / f"{stem}.fasta"
-    if exact.exists():
-        return str(exact)
-
-    matches = _sorted_rglob(project, f"{stem}.fasta")
-    if not matches:
+    path = Path(irma_segments_dir(wildcards)) / wildcards.segment / "consensus.fasta"
+    if not path.is_file():
         raise ValueError(
-            f"No FASTA found for sample={wildcards.sample}, segment={wildcards.segment}, "
-            f"selected_contig={stem}"
+            f"No normalized FASTA found for sample={wildcards.sample}, "
+            f"segment={wildcards.segment}: {path}"
         )
-    return str(matches[0])
-
-
-def irma_table_dir(wildcards):
-    project = Path(checkpoints.irma.get(sample=wildcards.sample).output.project)
-    return str(project / "tables")
-
-
-def irma_project_dir(wildcards):
-    return str(checkpoints.irma.get(sample=wildcards.sample).output.project)
+    return str(path)
 
 
 def blast_db_files(_wildcards):
@@ -277,6 +210,7 @@ def blast_db_files(_wildcards):
 # -----------------------------------------------------------------------------
 FINAL_TARGETS = [
     expand(f"{RESULTS}/{{sample}}/irma/project", sample=SAMPLES),
+    expand(f"{RESULTS}/{{sample}}/irma/manifest.tsv", sample=SAMPLES),
     expand(f"{RESULTS}/{{sample}}/coverage/coverage.tsv", sample=SAMPLES),
     expand(f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv", sample=SAMPLES),
     expand(
@@ -301,18 +235,35 @@ if RUN_GENOFLU:
         )
     )
 
+if RUN_VADR:
+    FINAL_TARGETS.extend(
+        [
+            expand(
+                f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr_summary.tsv",
+                sample=SAMPLES,
+            ),
+            expand(
+                f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.done",
+                sample=SAMPLES,
+            ),
+        ]
+    )
+
+if RUN_SUMMARY:
+    FINAL_TARGETS.append(f"{RESULTS}/run_summary/run_summary.html")
+
 
 rule all:
     input:
         FINAL_TARGETS
-	
+
 
 # -----------------------------------------------------------------------------
 # NanoPlot
 # -----------------------------------------------------------------------------
 rule nanoplot:
     input:
-        fastq=READ_GLOB
+        fastq=lambda wildcards: SAMPLE_FASTQ[wildcards.sample]
     output:
         done=touch(f"{RESULTS}/{{sample}}/nanoplot/done.txt")
     log:
@@ -357,7 +308,7 @@ PY
 # -----------------------------------------------------------------------------
 rule porechop:
     input:
-        fastq=READ_GLOB
+        fastq=lambda wildcards: SAMPLE_FASTQ[wildcards.sample]
     output:
         trimmed=f"{RESULTS}/{{sample}}/porechop/trimmed.fastq"
     log:
@@ -448,12 +399,16 @@ rule seqtk_rename:
 # -----------------------------------------------------------------------------
 checkpoint irma:
     input:
-        renamed=f"{RESULTS}/{{sample}}/fastplong/filtered_renamed.fastq.gz"
+        renamed=f"{RESULTS}/{{sample}}/fastplong/filtered_renamed.fastq.gz",
+        normalizer="scripts/normalize_irma_outputs.py"
     output:
         project=directory(f"{RESULTS}/{{sample}}/irma/project"),
-        segments=directory(f"{RESULTS}/{{sample}}/irma/segments")
+        segments=directory(f"{RESULTS}/{{sample}}/irma/segments"),
+        manifest=f"{RESULTS}/{{sample}}/irma/manifest.tsv"
     log:
         f"{RESULTS}/{{sample}}/irma/irma.log"
+    conda:
+        "envs/pysam.yaml"
     threads:
         IRMA_THREADS
     params:
@@ -462,18 +417,23 @@ checkpoint irma:
         runtime=IRMA_RUNTIME
     run:
         input_path = Path(str(input.renamed)).resolve()
+        normalizer_path = Path(str(input.normalizer)).resolve()
         project_path = Path(str(output.project)).resolve()
         segments_path = Path(str(output.segments)).resolve()
+        manifest_path = Path(str(output.manifest)).resolve()
         log_path = Path(str(log[0])).resolve()
 
         project_path.parent.mkdir(parents=True, exist_ok=True)
         segments_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         if project_path.exists():
             shutil.rmtree(project_path)
         if segments_path.exists():
             shutil.rmtree(segments_path)
+        if manifest_path.exists():
+            manifest_path.unlink()
 
         runtime = str(params.runtime).lower()
         allowed = {"auto", "apptainer", "singularity", "docker", "local"}
@@ -548,20 +508,135 @@ checkpoint irma:
                 str(project_path),
             ]
 
+        def remove_partial_irma_outputs():
+            """Remove partial checkpoint outputs before reporting a failed IRMA run."""
+            if project_path.exists():
+                shutil.rmtree(project_path, ignore_errors=True)
+            if segments_path.exists():
+                shutil.rmtree(segments_path, ignore_errors=True)
+            if manifest_path.exists():
+                manifest_path.unlink()
+
         with log_path.open("w") as log_handle:
             log_handle.write(f"IRMA runtime: {runtime}\n")
             log_handle.write("Command: " + shlex.join(command) + "\n\n")
             log_handle.flush()
-            subprocess.run(
-                command,
-                check=True,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
+            try:
+                subprocess.run(
+                    command,
+                    check=True,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                )
+            except subprocess.CalledProcessError as exc:
+                log_handle.write(
+                    f"\nESCAPE_STATUS=IRMA_EXECUTION_FAILED\n"
+                    f"IRMA_RETURN_CODE={exc.returncode}\n"
+                )
+                log_handle.flush()
+                remove_partial_irma_outputs()
+                raise RuntimeError(
+                    f"IRMA failed for sample {wildcards.sample} with return code "
+                    f"{exc.returncode}. See {log_path}."
+                ) from exc
+
+        # IRMA can occasionally return exit code 0 even when an internal process
+        # was killed or no QC-passing reads were available. Treat those messages
+        # as execution failures so that infrastructure problems cannot be reported
+        # downstream as biological negatives.
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        fatal_patterns = {
+            "process killed": r"(?im)^.*\bKilled\b.*$",
+            "no QC-passing data": r"(?i)found no QC[’']?d data",
+            "out of memory": r"(?i)(out of memory|oom-kill|oom killed|cannot allocate memory)",
+            "segmentation fault": r"(?i)segmentation fault",
+        }
+        fatal_matches = [
+            label for label, pattern in fatal_patterns.items()
+            if re.search(pattern, log_text)
+        ]
+        if fatal_matches:
+            with log_path.open("a") as log_handle:
+                log_handle.write(
+                    "\nESCAPE_STATUS=IRMA_INTERNAL_FAILURE\n"
+                    "ESCAPE_FAILURE_REASONS=" + ", ".join(fatal_matches) + "\n"
+                )
+            remove_partial_irma_outputs()
+            raise RuntimeError(
+                f"IRMA reported an internal failure for sample {wildcards.sample}: "
+                f"{', '.join(fatal_matches)}. See {log_path}."
             )
 
-        segments_path.mkdir(parents=True, exist_ok=True)
-        for fasta in sorted(project_path.glob("*.fasta"), key=lambda path: path.name):
-            shutil.copy2(fasta, segments_path / fasta.name)
+        normalize_command = [
+            sys.executable,
+            str(normalizer_path),
+            "--project",
+            str(project_path),
+            "--segments",
+            str(segments_path),
+            "--manifest",
+            str(manifest_path),
+            "--sample",
+            str(wildcards.sample),
+        ]
+        with log_path.open("a") as log_handle:
+            log_handle.write("\nNormalization command: " + shlex.join(normalize_command) + "\n")
+            log_handle.flush()
+            try:
+                subprocess.run(
+                    normalize_command,
+                    check=True,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                )
+            except subprocess.CalledProcessError as exc:
+                log_handle.write(
+                    f"\nESCAPE_STATUS=IRMA_NORMALIZATION_FAILED\n"
+                    f"NORMALIZER_RETURN_CODE={exc.returncode}\n"
+                )
+                log_handle.flush()
+                remove_partial_irma_outputs()
+                raise RuntimeError(
+                    f"IRMA output normalization failed for sample {wildcards.sample}. "
+                    f"See {log_path}."
+                ) from exc
+
+        # Validate the normalized interface. A sample may legitimately have zero
+        # READY segments, but the manifest itself must exist and be structurally
+        # valid. This prevents partial or malformed outputs from entering the DAG.
+        if not manifest_path.is_file() or manifest_path.stat().st_size == 0:
+            remove_partial_irma_outputs()
+            raise RuntimeError(
+                f"IRMA normalization did not create a non-empty manifest for "
+                f"sample {wildcards.sample}. See {log_path}."
+            )
+
+        with manifest_path.open(encoding="utf-8", errors="replace") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            required_columns = {"segment", "status"}
+            if reader.fieldnames is None or not required_columns.issubset(reader.fieldnames):
+                fieldnames = reader.fieldnames or []
+                remove_partial_irma_outputs()
+                raise RuntimeError(
+                    f"IRMA manifest for sample {wildcards.sample} is malformed; "
+                    f"required columns are {sorted(required_columns)}, found "
+                    f"{fieldnames}. See {log_path}."
+                )
+            manifest_rows = list(reader)
+
+        ready_segments = sorted({
+            row.get("segment", "")
+            for row in manifest_rows
+            if row.get("status") == "READY" and row.get("segment") in SEGMENT_SEQUENCE
+        })
+        with log_path.open("a") as log_handle:
+            log_handle.write("\nESCAPE_STATUS=IRMA_COMPLETED\n")
+            log_handle.write(f"ESCAPE_READY_SEGMENT_COUNT={len(ready_segments)}\n")
+            log_handle.write(
+                "ESCAPE_READY_SEGMENTS="
+                + (",".join(ready_segments) if ready_segments else "NONE")
+                + "\n"
+            )
 
 
 # -----------------------------------------------------------------------------
@@ -569,8 +644,8 @@ checkpoint irma:
 # -----------------------------------------------------------------------------
 rule check_coverage:
     input:
-        table_dir=irma_table_dir,
-        project_dir=irma_project_dir
+        segments_dir=irma_segments_dir,
+        manifest=irma_manifest_path
     output:
         flag=f"{RESULTS}/{{sample}}/coverage_flags/{{segment}}.flag",
         stats=f"{RESULTS}/{{sample}}/coverage_stats/{{segment}}.tsv"
@@ -587,10 +662,14 @@ rule check_coverage:
 # -----------------------------------------------------------------------------
 rule coverage_table:
     input:
-        project=irma_project_dir,
+        manifest=irma_manifest_path,
         flags=lambda wildcards: [
             f"{RESULTS}/{wildcards.sample}/coverage_flags/{segment}.flag"
-            for segment in segments_for_sample(wildcards)
+            for segment in SEGMENT_SEQUENCE
+        ],
+        stats=lambda wildcards: [
+            f"{RESULTS}/{wildcards.sample}/coverage_stats/{segment}.tsv"
+            for segment in SEGMENT_SEQUENCE
         ]
     output:
         tsv=f"{RESULTS}/{{sample}}/coverage/coverage.tsv"
@@ -708,34 +787,203 @@ rule medaka_vcf:
         mkdir -p "$(dirname {output.vcf:q})"
 
         medaka --version >> {log:q} 2>&1 || true
-        python -c "import medaka; print('python medaka __version__ =', getattr(medaka, '__version__', '<no __version__>'))" >> {log:q} 2>&1 || true
+        python -c "import medaka; print('python medaka __version__ =', getattr(medaka, '__version__', '<no __version__>'))" \
+            >> {log:q} 2>&1 || true
 
         if grep -q '^PASS$' {input.flag:q} && [[ -s {input.features:q} ]]; then
-            if medaka variant \
-                --features {input.features:q} \
-                --reference {input.fasta:q} \
-                --output {output.vcf:q} \
+            rm -f {output.vcf:q}
+
+            if medaka vcf \
+                {input.features:q} \
+                {input.fasta:q} \
+                {output.vcf:q} \
                 >> {log:q} 2>&1; then
+
                 if [[ ! -s {output.vcf:q} ]]; then
-                    found_vcf="$(find "$(dirname {output.vcf:q})" -type f -name '*.vcf' -size +0c | LC_ALL=C sort | head -n 1 || true)"
+                    found_vcf="$(
+                        find "$(dirname {output.vcf:q})" \
+                            -type f \
+                            -name '*.vcf' \
+                            -size +0c \
+                            | LC_ALL=C sort \
+                            | head -n 1 || true
+                    )"
+
                     if [[ -n "$found_vcf" && "$found_vcf" != {output.vcf:q} ]]; then
                         cp "$found_vcf" {output.vcf:q}
                     fi
                 fi
+
                 [[ -e {output.vcf:q} ]] || : > {output.vcf:q}
+
             elif [[ {params.fail_soft:q} == "true" ]]; then
-                echo "Medaka variant failed; creating an empty VCF because medaka_fail_soft=true." >> {log:q}
+                echo "Medaka VCF generation failed; creating an empty VCF because medaka_fail_soft=true." \
+                    >> {log:q}
                 : > {output.vcf:q}
             else
-                echo "Medaka variant failed and medaka_fail_soft=false." >> {log:q}
+                echo "Medaka VCF generation failed and medaka_fail_soft=false." \
+                    >> {log:q}
                 exit 1
             fi
         else
-            echo "Segment did not pass coverage or features are empty; VCF generation skipped." >> {log:q}
+            echo "Segment did not pass coverage or features are empty; VCF generation skipped." \
+                >> {log:q}
             : > {output.vcf:q}
         fi
         """
 
+# -----------------------------------------------------------------------------
+# Prepare coverage-qualified polished consensuses for VADR
+# -----------------------------------------------------------------------------
+rule prepare_vadr_input:
+    input:
+        consensus=lambda wildcards: [
+            f"{RESULTS}/{wildcards.sample}/medaka/{segment}/consensus.fasta"
+            for segment in segments_for_sample(wildcards)
+        ],
+        flags=lambda wildcards: [
+            f"{RESULTS}/{wildcards.sample}/coverage_flags/{segment}.flag"
+            for segment in segments_for_sample(wildcards)
+        ]
+    output:
+        fasta=f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr_input.fasta"
+    conda:
+        "envs/py-tools.yaml"
+    script:
+        "scripts/prepare_vadr_input.py"
+
+
+# -----------------------------------------------------------------------------
+# VADR influenza annotation
+#
+# Runtime selection:
+#   auto        -> local v-annotate.pl, Docker, Apptainer, then Singularity
+#   local       -> require v-annotate.pl on PATH
+#   docker      -> run the staphb/vadr image (amd64 emulation on Apple Silicon)
+#   apptainer   -> run the configured image with Apptainer
+#   singularity -> run the configured image with Singularity
+# -----------------------------------------------------------------------------
+rule vadr_annotate:
+    input:
+        fasta=f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr_input.fasta"
+    output:
+        outdir=directory(f"{RESULTS}/{{sample}}/vadr/output"),
+        done=touch(f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.done")
+    log:
+        f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.log"
+    threads:
+        VADR_THREADS
+    resources:
+        mem_mb=int(config.get("vadr_mem_mb", 8000)),
+        time_min=int(config.get("vadr_time_min", 120))
+    params:
+        image=VADR_IMAGE,
+        runtime=VADR_RUNTIME,
+        mkey=VADR_MKEY,
+        fail_soft="true" if VADR_FAIL_SOFT else "false"
+    run:
+        input_path = Path(str(input.fasta)).resolve()
+        outdir = Path(str(output.outdir)).resolve()
+        done_path = Path(str(output.done)).resolve()
+        log_path = Path(str(log[0])).resolve()
+        outdir.parent.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if outdir.exists():
+            shutil.rmtree(outdir)
+        outdir.mkdir(parents=True)
+
+        # An empty input is a legitimate result when no segment passes coverage.
+        if input_path.stat().st_size == 0:
+            log_path.write_text("No coverage-qualified consensus sequences; VADR skipped.\n")
+            done_path.touch()
+        else:
+            runtime = str(params.runtime).lower()
+            allowed = {"auto", "local", "docker", "apptainer", "singularity"}
+            if runtime not in allowed:
+                raise ValueError(
+                    f"Unsupported vadr_runtime={runtime!r}; choose one of {sorted(allowed)}"
+                )
+            if runtime == "auto":
+                if shutil.which("v-annotate.pl"):
+                    runtime = "local"
+                elif shutil.which("docker"):
+                    runtime = "docker"
+                elif shutil.which("apptainer"):
+                    runtime = "apptainer"
+                elif shutil.which("singularity"):
+                    runtime = "singularity"
+                else:
+                    raise RuntimeError(
+                        "No VADR runtime found. Install VADR locally or provide Docker, "
+                        "Apptainer, or Singularity; alternatively set vadr_runtime."
+                    )
+
+            prefix = wildcards.sample
+            vadr_args = [
+                "v-annotate.pl", "-f", "--split", "--cpu", str(threads),
+                "-r", "--atgonly", "--xnocomp", "--nomisc",
+                "--alt_fail", "extrant5,extrant3", "--mkey", str(params.mkey),
+                str(input_path), prefix,
+            ]
+            mount_root = Path(os.path.commonpath([str(input_path.parent), str(outdir.parent)]))
+            if runtime == "local":
+                command = vadr_args
+            elif runtime == "docker":
+                image = str(params.image)
+                if image.startswith("docker://"):
+                    image = image[len("docker://"):]
+                command = [
+                    "docker", "run", "--rm", "--platform", "linux/amd64",
+                    "-v", f"{mount_root}:{mount_root}", "-w", str(outdir),
+                    image, *vadr_args,
+                ]
+            else:
+                executable = shutil.which(runtime)
+                if executable is None:
+                    raise RuntimeError(f"Requested {runtime}, but it is not on PATH")
+                command = [
+                    executable, "exec", "--bind", f"{mount_root}:{mount_root}",
+                    str(params.image), *vadr_args,
+                ]
+
+            with log_path.open("w") as log_handle:
+                completed = subprocess.run(
+                    command, cwd=outdir, stdout=log_handle,
+                    stderr=subprocess.STDOUT, text=True,
+                )
+            if completed.returncode != 0:
+                if str(params.fail_soft).lower() == "true":
+                    with log_path.open("a") as log_handle:
+                        log_handle.write(
+                            f"VADR exited with code {completed.returncode}; "
+                            "continuing because vadr_fail_soft=true.\n"
+                        )
+                else:
+                    raise RuntimeError(
+                        f"VADR failed with exit code {completed.returncode}; see {log_path}"
+                    )
+
+            nested = outdir / prefix
+            if nested.is_dir():
+                for path in nested.glob(f"{prefix}.vadr.*"):
+                    shutil.move(str(path), str(outdir / path.name))
+                shutil.rmtree(nested, ignore_errors=True)
+            done_path.touch()
+
+
+# -----------------------------------------------------------------------------
+# Compact VADR status table for reporting
+# -----------------------------------------------------------------------------
+rule summarize_vadr:
+    input:
+        done=f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.done",
+        outdir=f"{RESULTS}/{{sample}}/vadr/output"
+    output:
+        tsv=f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr_summary.tsv"
+    conda:
+        "envs/py-tools.yaml"
+    script:
+        "scripts/summarize_vadr.py"
 
 # -----------------------------------------------------------------------------
 # BLAST
@@ -838,8 +1086,8 @@ rule concat_consensus:
 # H5N1 screen
 #
 # This is an IRMA-supported H5/N1 screening criterion, not an independent
-# definitive subtype call. It requires the selected HA and NA coverage tables
-# to correspond to H5 and N1 and both to pass the configured depth threshold.
+# definitive subtype call. It requires normalized HA and NA contigs identified
+# as H5 and N1 and both to pass the configured depth threshold.
 # -----------------------------------------------------------------------------
 rule detect_h5n1:
     input:
@@ -860,22 +1108,24 @@ rule detect_h5n1:
             except OSError:
                 return "MISSING"
 
-        def chosen_table(path):
+        def selected_contig(path):
             try:
                 with Path(str(path)).open() as handle:
                     reader = csv.DictReader(handle, delimiter="\t")
                     row = next(reader, None)
-                    return row.get("chosen_table", "NA") if row else "NA"
+                    if not row:
+                        return "NA"
+                    return row.get("selected_contig") or row.get("chosen_table", "NA")
             except OSError:
                 return "NA"
 
         ha_status = read_flag(input.ha_flag)
         na_status = read_flag(input.na_flag)
-        ha_table = chosen_table(input.ha_stats)
-        na_table = chosen_table(input.na_stats)
+        ha_contig = selected_contig(input.ha_stats)
+        na_contig = selected_contig(input.na_stats)
 
-        is_h5 = ha_table.startswith("A_HA_H5")
-        is_n1 = na_table.startswith("A_NA_N1")
+        is_h5 = ha_contig.startswith("A_HA_H5")
+        is_n1 = na_contig.startswith("A_NA_N1")
         passed = ha_status == "PASS" and na_status == "PASS" and is_h5 and is_n1
 
         output_path = Path(str(output.flag))
@@ -888,9 +1138,9 @@ rule detect_h5n1:
             f"sample={wildcards.sample}\n"
             f"coverage_threshold={params.threshold}\n"
             f"HA_status={ha_status}\n"
-            f"HA_chosen_table={ha_table}\n"
+            f"HA_selected_contig={ha_contig}\n"
             f"NA_status={na_status}\n"
-            f"NA_chosen_table={na_table}\n"
+            f"NA_selected_contig={na_contig}\n"
             f"H5N1_screen={'PASS' if passed else 'FAIL'}\n"
         )
 
@@ -912,21 +1162,27 @@ rule sample_summary:
         "envs/reporting.yaml"
     script:
         "scripts/sample_summary.py"
-        
+
 
 # -----------------------------------------------------------------------------
-# Produce the summary of the individual samples in html
+# Produce the summary of the individual samples in HTML
 # -----------------------------------------------------------------------------
 rule sample_summary_html:
     input:
         summary=f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.tsv",
         coverage=f"{RESULTS}/{{sample}}/coverage/coverage.tsv",
-        blast=f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv"
+        blast=f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv",
+        template="scripts/sample_summary.qmd",
+        genoflu=f"{RESULTS}/{{sample}}/genoflu/GenoFLU.tsv",
+        vadr_log=f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.log",
+        css="scripts/report/sample-report.css",
+        report_html="scripts/report/escape-report.html",
+        report_js="scripts/report/escape-report.js"
     output:
         html=f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.html"
     params:
-        template="scripts/sample_summary.qmd",
-        coverage_threshold=COVERAGE_MIN
+        coverage_threshold=COVERAGE_MIN,
+        snakemake_version=SNAKEMAKE_VERSION,
     conda:
         "envs/reporting.yaml"
     shell:
@@ -937,14 +1193,26 @@ rule sample_summary_html:
         summary_abs="$(cd "$(dirname {input.summary:q})" && pwd)/$(basename {input.summary:q})"
         coverage_abs="$(cd "$(dirname {input.coverage:q})" && pwd)/$(basename {input.coverage:q})"
         blast_abs="$(cd "$(dirname {input.blast:q})" && pwd)/$(basename {input.blast:q})"
-        template_abs="$(cd "$(dirname {params.template:q})" && pwd)/$(basename {params.template:q})"
+        genoflu_abs="$(cd "$(dirname {input.genoflu:q})" && pwd)/$(basename {input.genoflu:q})"
+        vadr_log_abs="$(cd "$(dirname {input.vadr_log:q})" && pwd)/$(basename {input.vadr_log:q})"
+        template_abs="$(cd "$(dirname {input.template:q})" && pwd)/$(basename {input.template:q})"
+        css_abs="$(cd "$(dirname {input.css:q})" && pwd)/$(basename {input.css:q})"
+        report_html_abs="$(cd "$(dirname {input.report_html:q})" && pwd)/$(basename {input.report_html:q})"
+        report_js_abs="$(cd "$(dirname {input.report_js:q})" && pwd)/$(basename {input.report_js:q})"
 
         temp_qmd="$output_dir/.sample_summary.qmd"
+        temp_report_dir="$output_dir/report"
+
+        mkdir -p "$temp_report_dir"
+
         cp "$template_abs" "$temp_qmd"
+        cp "$css_abs" "$temp_report_dir/sample-report.css"
+        cp "$report_html_abs" "$temp_report_dir/escape-report.html"
+        cp "$report_js_abs" "$temp_report_dir/escape-report.js"
 
         (
             cd "$output_dir"
-
+            export REPORT_SNAKEMAKE_VERSION={params.snakemake_version:q}
             quarto render ".sample_summary.qmd" \
               --to html \
               --output "{wildcards.sample}.sample_summary.html" \
@@ -952,12 +1220,93 @@ rule sample_summary_html:
               -P "summary_file:${{summary_abs}}" \
               -P "coverage_file:${{coverage_abs}}" \
               -P "blast_file:${{blast_abs}}" \
+              -P "genoflu_file:${{genoflu_abs}}" \
+              -P "vadr_log_file:${{vadr_log_abs}}" \
               -P "coverage_threshold:{params.coverage_threshold}"
-        )
+            )
 
         rm -f "$temp_qmd"
         rm -rf "$output_dir/.sample_summary_files"
+        rm -rf "$temp_report_dir"
         """
+
+
+# -----------------------------------------------------------------------------
+# Produce a run-level report across all FASTQ-derived samples
+# -----------------------------------------------------------------------------
+rule run_summary_html:
+    input:
+        summaries=expand(
+            f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.tsv",
+            sample=SAMPLES,
+        ),
+        reports=expand(
+            f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.html",
+            sample=SAMPLES,
+        ),
+        coverage=expand(
+            f"{RESULTS}/{{sample}}/coverage/coverage.tsv",
+            sample=SAMPLES,
+        ),
+        genoflu=expand(
+            f"{RESULTS}/{{sample}}/genoflu/GenoFLU.tsv",
+            sample=SAMPLES,
+        ),
+        vadr_logs=expand(
+            f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.log",
+            sample=SAMPLES,
+        ),
+        template="scripts/run_summary.qmd",
+        css="scripts/report/sample-report.css",
+        report_html="scripts/report/escape-report.html",
+        report_js="scripts/report/escape-report.js"
+    output:
+        html=f"{RESULTS}/run_summary/run_summary.html",
+        tsv=f"{RESULTS}/run_summary/run_summary.tsv",
+        review=f"{RESULTS}/run_summary/samples_requiring_review.tsv"
+    params:
+        samples=",".join(SAMPLES),
+        snakemake_version=SNAKEMAKE_VERSION,
+        results_dir=RESULTS,
+    conda:
+        "envs/reporting.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+
+        output_dir="$(cd "$(dirname {output.html:q})" && pwd)"
+        results_abs="$(cd {params.results_dir:q} && pwd)"
+        template_abs="$(cd "$(dirname {input.template:q})" && pwd)/$(basename {input.template:q})"
+        css_abs="$(cd "$(dirname {input.css:q})" && pwd)/$(basename {input.css:q})"
+        report_html_abs="$(cd "$(dirname {input.report_html:q})" && pwd)/$(basename {input.report_html:q})"
+        report_js_abs="$(cd "$(dirname {input.report_js:q})" && pwd)/$(basename {input.report_js:q})"
+
+        temp_qmd="$output_dir/.run_summary.qmd"
+        temp_report_dir="$output_dir/report"
+
+        mkdir -p "$temp_report_dir"
+        cp "$template_abs" "$temp_qmd"
+        cp "$css_abs" "$temp_report_dir/sample-report.css"
+        cp "$report_html_abs" "$temp_report_dir/escape-report.html"
+        cp "$report_js_abs" "$temp_report_dir/escape-report.js"
+
+        (
+            cd "$output_dir"
+            export REPORT_SNAKEMAKE_VERSION={params.snakemake_version:q}
+            quarto render ".run_summary.qmd" \
+              --to html \
+              --output "run_summary.html" \
+              -P "results_dir:${{results_abs}}" \
+              -P "samples:{params.samples}" \
+              -P "run_summary_tsv:run_summary.tsv" \
+              -P "review_tsv:samples_requiring_review.tsv"
+        )
+
+        rm -f "$temp_qmd"
+        rm -rf "$output_dir/.run_summary_files"
+        rm -rf "$temp_report_dir"
+        """
+
 
 # -----------------------------------------------------------------------------
 # GenoFLU, gated by the H5N1 screen

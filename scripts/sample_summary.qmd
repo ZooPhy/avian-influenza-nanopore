@@ -1,11 +1,14 @@
 ---
-title: "Avian Influenza Nanopore Sample Report"
+title: "ESCAPE Avian Influenza Pipeline Results"
 format:
   html:
     toc: true
     toc-location: left
     embed-resources: true
     theme: cosmo
+    css: report/sample-report.css
+    include-after-body: report/escape-report.html
+    title-block-banner: false
 execute:
   echo: false
   warning: false
@@ -20,19 +23,42 @@ sample_id = None
 summary_file = None
 coverage_file = None
 blast_file = None
+genoflu_file = None
+vadr_log_file = None
 coverage_threshold = 50
 ```
 
 ```{python}
 from pathlib import Path
+from datetime import datetime, timezone
+import base64
+import html
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+from urllib.parse import quote
 
 import pandas as pd
 import plotly.express as px
 from IPython.display import HTML, Markdown, display
 
+
+def file_data_uri(path, media_type):
+    """Embed a local file as a data URI so clicking downloads it directly."""
+    path = Path(path)
+    if not path.is_file() or path.stat().st_size == 0:
+        return None
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{media_type};base64,{encoded}"
+
 summary_file = Path(summary_file)
 coverage_file = Path(coverage_file)
 blast_file = Path(blast_file)
+genoflu_file = Path(genoflu_file) if genoflu_file else None
+vadr_log_file = Path(vadr_log_file) if vadr_log_file else None
 
 summary = pd.read_csv(
     summary_file,
@@ -55,24 +81,116 @@ if summary.empty:
     raise ValueError(f"Summary table is empty: {summary_file}")
 
 row = summary.iloc[0]
+
+def display_unknown(value):
+    """Use Unknown for missing analytical calls without renaming the NA segment."""
+    text = str(value).strip()
+    if not text or text.upper() in {"NA", "N/A", "NONE", "NO_HIT", "UNDETERMINED"}:
+        return "Unknown"
+    return text
+
+review_flags = str(row["review_flags"])
+
+if review_flags == "NONE":
+    review_text = "No review flags"
+    review_status = "status-pass"
+else:
+    review_text = review_flags.replace(";", ", ")
+    review_status = "status-warning"
+
+h5n1_status = str(row["h5n1_screen"]).upper()
+h5n1_badge = "PASS" if h5n1_status == "PASS" else "WARNING"
+h5n1_class = "status-pass" if h5n1_badge == "PASS" else "status-warning"
+
+segments_pass = int(row["segments_pass"])
+segment_class = (
+    "status-pass"
+    if segments_pass == 8
+    else "status-warning"
+)
+
+reads_after = int(row["reads_after"])
 ```
 
-## Sample
-
 ```{python}
-display(Markdown(f"### `{sample_id}`"))
+header_html = f"""
+<div class="report-header">
+  <div class="report-brand-mark" aria-hidden="true">
+    <span></span>
+    <span></span>
+    <span></span>
+  </div>
+
+  <div class="report-title-group">
+    <div class="report-title">
+      ESCAPE Avian Influenza Pipeline Results
+    </div>
+    <div class="report-subtitle">
+      Sample {sample_id}
+    </div>
+  </div>
+
+  <div class="report-local-badge">
+    <span class="report-local-dot"></span>
+    Local analysis
+  </div>
+</div>
+
+<div class="metric-grid">
+  <div class="metric-card">
+    <div class="metric-label">H5N1 screen</div>
+    <div class="metric-value">
+      <span class="status-badge {h5n1_class}">
+        {h5n1_badge}
+      </span>
+    </div>
+    <div class="metric-detail">
+      IRMA-supported screening result
+    </div>
+  </div>
+
+  <div class="metric-card">
+    <div class="metric-label">Segments passing coverage</div>
+    <div class="metric-value">
+      <span class="status-badge {segment_class}">
+        {segments_pass} / 8
+      </span>
+    </div>
+    <div class="metric-detail">
+      Coverage threshold: {float(coverage_threshold):g}x
+    </div>
+  </div>
+
+  <div class="metric-card">
+    <div class="metric-label">Filtered reads</div>
+    <div class="metric-value">
+      {reads_after:,}
+    </div>
+    <div class="metric-detail">
+      Reads retained after fastplong
+    </div>
+  </div>
+
+  <div class="metric-card">
+    <div class="metric-label">Review status</div>
+    <div class="metric-value">
+      <span class="status-badge {review_status}">
+        {"PASS" if review_flags == "NONE" else "REVIEW"}
+      </span>
+    </div>
+    <div class="metric-detail">
+      {review_text}
+    </div>
+  </div>
+</div>
+"""
+
+display(HTML(header_html))
 ```
 
 ## Analytical overview
 
 ```{python}
-review_flags = str(row["review_flags"])
-
-if review_flags == "NONE":
-    review_text = "No review flags were generated."
-else:
-    review_text = review_flags.replace(";", ", ")
-
 overview = pd.DataFrame(
     {
         "Metric": [
@@ -94,100 +212,119 @@ overview = pd.DataFrame(
     }
 )
 
-display(HTML(overview.to_html(index=False, escape=False)))
+display(
+    HTML(
+        '<div class="report-panel">'
+        + overview.to_html(
+            index=False,
+            escape=False,
+            classes="report-table",
+        )
+        + "</div>"
+    )
+)
 ```
 
 ## Read processing
 
 ```{python}
-read_metrics = pd.DataFrame(
-    {
-        "Metric": [
-            "Reads before filtering",
-            "Reads after filtering",
-            "Reads removed",
-            "Bases before filtering",
-            "Bases after filtering",
-            "Q20 rate before",
-            "Q20 rate after",
-            "Q30 rate before",
-            "Q30 rate after",
-            "Reads with adapters",
-        ],
-        "Value": [
-            row["reads_before"],
-            row["reads_after"],
-            int(row["reads_before"]) - int(row["reads_after"]),
-            row["bases_before"],
-            row["bases_after"],
-            f'{float(row["q20_rate_before"]) * 100:.1f}%',
-            f'{float(row["q20_rate_after"]) * 100:.1f}%',
-            f'{float(row["q30_rate_before"]) * 100:.1f}%',
-            f'{float(row["q30_rate_after"]) * 100:.1f}%',
-            row["reads_with_adapters"],
-        ],
-    }
-)
+reads_before = int(row["reads_before"])
+reads_after = int(row["reads_after"])
+reads_removed = max(reads_before - reads_after, 0)
+reads_with_adapters = int(row["reads_with_adapters"])
+bases_before = int(row["bases_before"])
+bases_after = int(row["bases_after"])
 
-display(HTML(read_metrics.to_html(index=False)))
+read_processing_data = {
+    "reads": {"before": reads_before, "after": reads_after, "removed": reads_removed, "retention": (reads_after / reads_before) if reads_before else 0},
+    "bases": {"before": bases_before, "after": bases_after, "removed": max(bases_before - bases_after, 0), "retention": (bases_after / bases_before) if bases_before else 0},
+    "q20": {"before": float(row["q20_rate_before"]), "after": float(row["q20_rate_after"])},
+    "q30": {"before": float(row["q30_rate_before"]), "after": float(row["q30_rate_after"])},
+    "adapters": {"count": reads_with_adapters, "fraction": (reads_with_adapters / reads_before) if reads_before else 0},
+}
+read_json = json.dumps(read_processing_data, ensure_ascii=False).replace("</", "<\\/")
+
+display(HTML(f"""
+<div class="escape-viz-card escape-read-card">
+  <div class="escape-viz-heading">
+    <div>
+      <div class="escape-viz-eyebrow">Oxford Nanopore read QC</div>
+      <div class="escape-viz-title">Read processing flow</div>
+      <div class="escape-viz-subtitle">Explore retained reads, retained bases, and quality-rate changes.</div>
+    </div>
+    <div class="escape-viz-accent" aria-hidden="true"></div>
+  </div>
+  <div class="escape-read-viz" data-escape-read='{html.escape(read_json, quote=True)}'></div>
+  <details class="escape-data-details">
+    <summary>View underlying metrics</summary>
+    <div class="escape-data-details-body">
+      <table>
+        <thead><tr><th>Metric</th><th>Before</th><th>After</th><th>Change</th></tr></thead>
+        <tbody>
+          <tr><td>Reads</td><td>{reads_before:,}</td><td>{reads_after:,}</td><td>{reads_after-reads_before:+,}</td></tr>
+          <tr><td>Bases</td><td>{bases_before:,}</td><td>{bases_after:,}</td><td>{bases_after-bases_before:+,}</td></tr>
+          <tr><td>Q20 rate</td><td>{float(row["q20_rate_before"])*100:.1f}%</td><td>{float(row["q20_rate_after"])*100:.1f}%</td><td>{(float(row["q20_rate_after"])-float(row["q20_rate_before"]))*100:+.1f} pp</td></tr>
+          <tr><td>Q30 rate</td><td>{float(row["q30_rate_before"])*100:.1f}%</td><td>{float(row["q30_rate_after"])*100:.1f}%</td><td>{(float(row["q30_rate_after"])-float(row["q30_rate_before"]))*100:+.1f} pp</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </details>
+</div>
+"""))
 ```
 
 ## Segment coverage
 
 ```{python}
-coverage_display = coverage[
-    [
-        "segment",
-        "contig",
-        "length",
-        "median_depth",
-        "mean_depth",
-        "breadth_covered",
-        "coverage_flag",
-    ]
-].copy()
+segment_order = ["PB2", "PB1", "PA", "HA", "NP", "NA", "MP", "NS"]
+expected_lengths = {
+    "PB2": (2200, 2400), "PB1": (2200, 2400), "PA": (2100, 2300),
+    "HA": (1600, 1800), "NP": (1450, 1600), "NA": (1300, 1500),
+    "MP": (950, 1050), "NS": (800, 950),
+}
+segment_data = coverage.copy()
+segment_data["segment"] = segment_data["segment"].astype(str)
+segment_data["contig"] = segment_data["contig"].astype(str)
+segment_data["coverage_status"] = segment_data["coverage_flag"].astype(str).str.upper()
+for column in ["length", "median_depth", "mean_depth", "breadth_covered"]:
+    segment_data[column] = pd.to_numeric(segment_data[column], errors="coerce").fillna(0)
 
-coverage_display.columns = [
-    "Segment",
-    "IRMA contig",
-    "Length",
-    "Median depth",
-    "Mean depth",
-    "Breadth covered",
-    "Status",
-]
+def completeness_status(record):
+    expected = expected_lengths.get(record["segment"])
+    if not expected:
+        return "REVIEW"
+    return "PASS" if expected[0] <= float(record["length"]) <= expected[1] else "REVIEW"
 
-coverage_display["Breadth covered"] = coverage_display[
-    "Breadth covered"
-].map(lambda value: f"{float(value) * 100:.1f}%")
-
-display(HTML(coverage_display.to_html(index=False)))
-```
-
-```{python}
-coverage_plot = coverage.copy()
-coverage_plot["status"] = coverage_plot["coverage_flag"]
-
-fig = px.bar(
-    coverage_plot,
-    x="segment",
-    y="median_depth",
-    color="status",
-    title="Median coverage depth by segment",
-    labels={
-        "segment": "Segment",
-        "median_depth": "Median depth",
-        "status": "Coverage status",
-    },
+segment_data["completeness_status"] = segment_data.apply(completeness_status, axis=1)
+segment_data["overall_status"] = segment_data.apply(
+    lambda r: "PASS" if r["coverage_status"] == "PASS" and r["completeness_status"] == "PASS"
+    else ("WARNING" if r["coverage_status"] == "PASS" else "REVIEW"), axis=1
 )
+segment_data["expected_length_min"] = segment_data["segment"].map(lambda x: expected_lengths.get(x, (None, None))[0])
+segment_data["expected_length_max"] = segment_data["segment"].map(lambda x: expected_lengths.get(x, (None, None))[1])
+segment_data["sort"] = segment_data["segment"].map({s:i for i,s in enumerate(segment_order)})
+segment_data = segment_data.sort_values("sort").drop(columns="sort")
+segment_records = segment_data[[
+    "segment", "contig", "length", "median_depth", "mean_depth", "breadth_covered",
+    "coverage_status", "completeness_status", "overall_status",
+    "expected_length_min", "expected_length_max"
+]].to_dict(orient="records")
+segment_payload = {"threshold": float(coverage_threshold), "segments": segment_records}
+segment_json = json.dumps(segment_payload, ensure_ascii=False).replace("</", "<\\/")
 
-fig.add_hline(
-    y=float(coverage_threshold),
-    line_dash="dash",
-    annotation_text=f"Coverage threshold: {float(coverage_threshold):g}x",
-)
-
-fig.show()
+display(HTML(f"""
+<div class="escape-viz-card escape-segment-card">
+  <div class="escape-viz-heading">
+    <div>
+      <div class="escape-viz-eyebrow">Influenza A genome QC</div>
+      <div class="escape-viz-title">Interactive segment coverage</div>
+      <div class="escape-viz-subtitle">Switch between median depth, completeness, and QC status. Select a segment for details.</div>
+    </div>
+    <div class="escape-viz-accent" aria-hidden="true"></div>
+  </div>
+  <div class="escape-segment-viz" data-escape-segments='{html.escape(segment_json, quote=True)}'></div>
+</div>
+"""))
 ```
 
 ## Influenza subtype evidence
@@ -203,8 +340,8 @@ subtype_table = pd.DataFrame(
             "H5N1 screen",
         ],
         "Value": [
-            row["ha_contig"],
-            row["na_contig"],
+            display_unknown(row["ha_contig"]),
+            display_unknown(row["na_contig"]),
             row["ha_median_depth"],
             row["na_median_depth"],
             row["h5n1_screen"],
@@ -212,17 +349,641 @@ subtype_table = pd.DataFrame(
     }
 )
 
-display(HTML(subtype_table.to_html(index=False)))
+display(
+    HTML(
+        '<div class="report-panel">'
+        + subtype_table.to_html(
+            index=False,
+            classes="report-table",
+        )
+        + "</div>"
+    )
+)
 ```
 
 ## BLAST top hits
 
 ```{python}
 blast_display = blast.copy()
-blast_display.columns = ["Sample", "Segment", "Top BLAST hit"]
+blast_display.columns = [
+    "Sample",
+    "Segment",
+    "Top BLAST hit",
+]
 
-display(HTML(blast_display.to_html(index=False)))
+
+def ncbi_nuccore_link(accession):
+    accession = str(accession).strip()
+
+    if not accession or accession.upper() in {"NO_HIT", "NONE", "NA", "N/A"}:
+        return html.escape(accession or "NO_HIT")
+
+    url = (
+        "https://www.ncbi.nlm.nih.gov/nuccore/"
+        + quote(accession, safe="._-")
+    )
+
+    return (
+        f'<a class="blast-accession-link" href="{url}" '
+        'target="_blank" rel="noopener noreferrer">'
+        f'{html.escape(accession)}</a>'
+    )
+
+
+blast_display["Top BLAST hit"] = blast_display[
+    "Top BLAST hit"
+].map(ncbi_nuccore_link)
+
+display(
+    HTML(
+        '<div class="report-panel">'
+        + blast_display.to_html(
+            index=False,
+            escape=False,
+            classes="report-table",
+        )
+        + "</div>"
+    )
+)
 ```
+
+
+## GenoFLU genotype
+
+```{python}
+def parse_genoflu_report(path):
+    """Parse the compact plain-text GenoFLU report emitted by genoflu.py."""
+    result = {
+        "status": "Not available",
+        "reason": "GenoFLU output was not provided to the report.",
+        "threshold": None,
+        "matched_segments": None,
+        "input_segments": None,
+        "calls": {},
+        "raw_text": "",
+    }
+
+    if path is None or not path.exists() or path.stat().st_size == 0:
+        return result
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    result["raw_text"] = text
+
+    threshold_match = re.search(r"pident_threshold:\s*([0-9.]+)", text)
+    if threshold_match:
+        result["threshold"] = float(threshold_match.group(1))
+
+    summary_match = re.search(
+        r"consensus\s+Genotype\s+-->\s+([^:\n]+):\s*(.*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if summary_match:
+        result["status"] = summary_match.group(1).strip()
+        result["reason"] = summary_match.group(2).strip()
+
+    count_match = re.search(
+        r"Only\s+(\d+)\s+segments\s+>[0-9.]+%\s+match\s+found\s+of\s+total\s+(\d+)\s+segments",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if count_match:
+        result["matched_segments"] = int(count_match.group(1))
+        result["input_segments"] = int(count_match.group(2))
+
+    calls_match = re.search(
+        r"segments\s+in\s+input\s+file:\s*(.*?)\s+at\s+percent\s+identity",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if calls_match:
+        for item in calls_match.group(1).split(","):
+            if ":" not in item:
+                continue
+            segment, call = item.split(":", 1)
+            segment = segment.strip().upper()
+            call = call.strip()
+            if segment and call:
+                result["calls"][segment] = call
+
+    return result
+
+
+genoflu = parse_genoflu_report(genoflu_file)
+all_segments = ["PB2", "PB1", "PA", "HA", "NP", "NA", "MP", "NS"]
+call_rows = []
+
+for segment in all_segments:
+    call = genoflu["calls"].get(segment)
+    call_rows.append(
+        {
+            "Segment": segment,
+            "GenoFLU call": (
+                html.escape(call)
+                if call
+                else '<span class="file-unavailable">Not available</span>'
+            ),
+        }
+    )
+
+calls_df = pd.DataFrame(call_rows)
+status_text = str(genoflu["status"])
+status_class = (
+    "download-status-pass"
+    if status_text.lower() not in {"not assigned", "not available"}
+    else "download-status-review"
+)
+
+if genoflu_file and genoflu_file.exists() and genoflu_file.stat().st_size > 0:
+    genoflu_href = file_data_uri(genoflu_file, "text/plain;charset=utf-8")
+    genoflu_download = (
+        f'<a class="file-download-link" href="{genoflu_href}" '
+        f'download="{html.escape(str(sample_id))}_GenoFLU.tsv">'
+        '<span aria-hidden="true">↓</span> GenoFLU output</a>'
+    )
+else:
+    genoflu_download = '<span class="file-unavailable">Output not available</span>'
+
+matched = genoflu["matched_segments"]
+input_count = genoflu["input_segments"]
+threshold = genoflu["threshold"]
+missing_segments = [segment for segment in all_segments if segment not in genoflu["calls"]]
+
+summary_bits = []
+if matched is not None:
+    if status_text.lower() == "not assigned" and missing_segments:
+        missing_count = len(missing_segments)
+        segment_word = "segment was" if missing_count == 1 else "segments were"
+        summary_bits.append(
+            f"{matched} segments matched; {missing_count} required genome {segment_word} unavailable"
+        )
+    elif input_count is not None:
+        summary_bits.append(f"{matched} of {input_count} input segments matched")
+    else:
+        summary_bits.append(f"{matched} segments matched")
+if threshold is not None:
+    summary_bits.append(f"identity threshold: {threshold:g}%")
+summary_line = " · ".join(summary_bits)
+
+if status_text.lower() == "not assigned":
+    submitted_count = input_count if input_count is not None else len(genoflu["calls"])
+    matched_count = matched if matched is not None else len(genoflu["calls"])
+    threshold_phrase = f" at ≥{threshold:g}% identity" if threshold is not None else ""
+    missing_text = ", ".join(missing_segments) if missing_segments else "one or more required segments"
+    result_text = (
+        f"All {matched_count} of {submitted_count} submitted segments matched{threshold_phrase}, "
+        f"but {missing_text} were unavailable, so a complete eight-segment genotype "
+        "could not be assigned."
+    )
+    interpretation_text = (
+        "GenoFLU completed successfully. Missing or unresolved segments are shown as "
+        "not available."
+    )
+else:
+    result_text = str(genoflu["reason"])
+    interpretation_text = "GenoFLU completed and returned the genotype result shown below."
+
+reason_text = html.escape(result_text)
+
+genoflu_html = (
+    '<div class="report-panel">'
+    '<div class="file-download-header">'
+    '<div>'
+    '<div class="file-download-title">Genotype assignment</div>'
+    f'<div class="file-download-subtitle">{html.escape(summary_line)}</div>'
+    '</div>'
+    f'<div><span class="download-status {status_class}">{html.escape(status_text)}</span></div>'
+    '</div>'
+    f'<p><strong>GenoFLU result:</strong> {reason_text}</p>'
+    '<div class="file-download-table-wrap">'
+    + calls_df.to_html(
+        index=False,
+        escape=False,
+        classes="report-table genoflu-table",
+    )
+    + '</div>'
+    '<div class="file-download-header" style="margin-top: 1rem;">'
+    f'<div class="file-download-note">{html.escape(interpretation_text)}</div>'
+    f'<div>{genoflu_download}</div>'
+    '</div>'
+    '</div>'
+)
+
+display(HTML(genoflu_html))
+```
+
+
+## VADR annotation quality control
+
+```{python}
+def parse_vadr_log(path):
+    """Parse key sequence and alert summaries from a VADR v-annotate.pl log."""
+    result = {
+        "available": False,
+        "completed": False,
+        "version": None,
+        "sequence_count": 0,
+        "pass_count": 0,
+        "fail_count": 0,
+        "segments": [],
+        "alerts": [],
+    }
+
+    if path is None or not path.exists() or path.stat().st_size == 0:
+        return result
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    result["available"] = True
+    result["completed"] = bool(re.search(r"^\[ok\]\s*$", text, flags=re.MULTILINE))
+
+    version_match = re.search(r"# VADR\s+([^\s]+)", text)
+    if version_match:
+        result["version"] = version_match.group(1)
+
+    segment_map = {
+        "fluA-seg1": "PB2",
+        "fluA-seg2": "PB1",
+        "fluA-seg3": "PA",
+        "fluA-seg4": "HA",
+        "fluA-seg5": "NP",
+        "fluA-seg6": "NA",
+        "fluA-seg7": "MP",
+        "fluA-seg8": "NS",
+    }
+
+    model_pattern = re.compile(
+        r"^\s*\d+\s+(\S+)\s+(fluA-seg\d+)\s+(\S+)\s+"
+        r"(\d+)\s+(\d+)\s+(\d+)\s*$",
+        flags=re.MULTILINE,
+    )
+    for model, group, subgroup, nseq, npass, nfail in model_pattern.findall(text):
+        result["segments"].append(
+            {
+                "Segment": segment_map.get(group, group),
+                "Model": (
+                    f'<a href="https://www.ncbi.nlm.nih.gov/nuccore/{html.escape(model)}" '
+                    f'target="_blank" rel="noopener noreferrer">{html.escape(model)}</a>'
+                ),
+                "Subtype/group": "—" if subgroup == "-" else subgroup,
+                "VADR status": "PASS" if int(nfail) == 0 else "REVIEW",
+            }
+        )
+        result["sequence_count"] += int(nseq)
+        result["pass_count"] += int(npass)
+        result["fail_count"] += int(nfail)
+
+    alert_pattern = re.compile(
+        r"^\s*\d+\s+(\S+)\s+(yes\*?|no)\s+(\S+)\s+\S+\s+"
+        r"(\d+)\s+(\d+)\s+(.+?)\s*$",
+        flags=re.MULTILINE,
+    )
+    for code, causes_failure, short, cases, seqs, description in alert_pattern.findall(text):
+        result["alerts"].append(
+            {
+                "Alert": code,
+                "Effect": short.replace("_", " ").title(),
+                "Failure-causing": "Yes" if causes_failure.startswith("yes") else "No",
+                "Cases": int(cases),
+                "Sequences": int(seqs),
+            }
+        )
+
+    return result
+
+
+vadr = parse_vadr_log(vadr_log_file)
+
+if not vadr["available"]:
+    display(
+        HTML(
+            '<div class="report-panel">'
+            '<div class="file-download-title">VADR annotation</div>'
+            '<p class="file-download-note">VADR output was not available to this report.</p>'
+            '</div>'
+        )
+    )
+else:
+    vadr_status = "PASS" if vadr["completed"] else "REVIEW"
+    vadr_status_class = "download-status-pass" if vadr["completed"] else "download-status-review"
+
+    segment_df = pd.DataFrame(vadr["segments"])
+    if not segment_df.empty:
+        segment_df["VADR status"] = segment_df["VADR status"].map(
+            lambda value: (
+                f'<span class="status-pill {"status-pass" if value == "PASS" else "status-warning"}">'
+                f'{html.escape(value)}</span>'
+            )
+        )
+        segment_table = segment_df.to_html(
+            index=False,
+            escape=False,
+            classes="report-table vadr-segment-table",
+        )
+    else:
+        segment_table = '<p class="file-download-note">No per-segment VADR rows were parsed.</p>'
+
+    alerts_df = pd.DataFrame(vadr["alerts"])
+    failure_alerts = alerts_df[alerts_df["Failure-causing"] == "Yes"] if not alerts_df.empty else alerts_df
+    if not failure_alerts.empty:
+        alerts_table = failure_alerts.to_html(
+            index=False,
+            escape=True,
+            classes="report-table vadr-alert-table",
+        )
+    else:
+        alerts_table = '<p class="file-download-note">No failure-causing VADR alerts were reported.</p>'
+
+    vadr_href = file_data_uri(vadr_log_file, "text/plain;charset=utf-8")
+    vadr_download = (
+        f'<a class="file-download-link" href="{vadr_href}" '
+        f'download="{html.escape(str(sample_id))}_VADR.log">'
+        '<span aria-hidden="true">↓</span> VADR log</a>'
+        if vadr_href
+        else '<span class="file-unavailable">Log not available</span>'
+    )
+
+    version_text = f' · VADR {html.escape(vadr["version"])}' if vadr["version"] else ""
+    interpretation = (
+        f'VADR completed on {vadr["sequence_count"]} coverage-qualified consensus sequences: '
+        f'{vadr["pass_count"]} passed annotation checks and {vadr["fail_count"]} failed. '
+        'A sequence-level VADR failure is a quality-control finding and does not mean the pipeline failed.'
+    )
+
+    vadr_html = (
+        '<div class="report-panel">'
+        '<div class="file-download-header">'
+        '<div>'
+        '<div class="file-download-title">VADR annotation quality control</div>'
+        f'<div class="file-download-subtitle">{vadr["pass_count"]} pass · '
+        f'{vadr["fail_count"]} fail · {vadr["sequence_count"]} analyzed{version_text}</div>'
+        '</div>'
+        f'<div><span class="download-status {vadr_status_class}">{vadr_status}</span></div>'
+        '</div>'
+        f'<p>{html.escape(interpretation)}</p>'
+        '<div class="file-download-table-wrap">'
+        f'{segment_table}'
+        '</div>'
+        '<div class="file-download-title" style="margin-top: 1rem;">Failure-causing alerts</div>'
+        '<div class="file-download-table-wrap">'
+        f'{alerts_table}'
+        '</div>'
+        '<div class="file-download-header" style="margin-top: 1rem;">'
+        '<div class="file-download-note">Review failed segments and alerts before downstream submission or interpretation.</div>'
+        f'<div>{vadr_download}</div>'
+        '</div>'
+        '</div>'
+    )
+    display(HTML(vadr_html))
+```
+
+## Consensus and variant files
+
+```{python}
+def count_vcf_records(path):
+    """Count non-header variant records in a valid, non-empty VCF."""
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        return sum(
+            1
+            for line in handle
+            if line.strip() and not line.startswith("#")
+        )
+
+segment_download_rows = []
+report_dir = summary_file.parent
+sample_dir = report_dir.parent
+
+for _, segment_row in segment_data.iterrows():
+    segment = str(segment_row["segment"])
+    consensus_path = sample_dir / "medaka" / segment / "consensus.fasta"
+    vcf_path = sample_dir / "medaka" / segment / "variants.vcf"
+
+    consensus_available = consensus_path.exists() and consensus_path.stat().st_size > 0
+    vcf_available = vcf_path.exists() and vcf_path.stat().st_size > 0
+
+    if consensus_available:
+        consensus_href = file_data_uri(consensus_path, "text/plain;charset=utf-8")
+        consensus_link = (
+            f'<a class="file-download-link" href="{consensus_href}" '
+            f'download="{html.escape(str(sample_id))}_{html.escape(segment)}_consensus.fasta">'
+            '<span aria-hidden="true">↓</span> FASTA</a>'
+        )
+    else:
+        consensus_link = '<span class="file-unavailable">Not available</span>'
+
+    coverage_status = str(segment_row["coverage_status"]).upper()
+
+    if vcf_available:
+        variant_count = count_vcf_records(vcf_path)
+        variant_label = "1 variant" if variant_count == 1 else f"{variant_count} variants"
+        variant_summary = (
+            '<span class="download-status download-status-pass">'
+            f'{variant_label}</span>'
+        )
+        vcf_href = file_data_uri(vcf_path, "text/plain;charset=utf-8")
+        vcf_link = (
+            f'<a class="file-download-link" href="{vcf_href}" '
+            f'download="{html.escape(str(sample_id))}_{html.escape(segment)}_variants.vcf">'
+            '<span aria-hidden="true">↓</span> VCF</a>'
+        )
+    elif coverage_status != "PASS":
+        variant_summary = (
+            '<span class="download-status download-status-fail">'
+            'Skipped: coverage</span>'
+        )
+        vcf_link = '<span class="file-unavailable">Not generated</span>'
+    else:
+        variant_summary = (
+            '<span class="download-status download-status-review">'
+            'No VCF produced</span>'
+        )
+        vcf_link = '<span class="file-unavailable">Not generated</span>'
+
+    status = str(segment_row["overall_status"])
+    status_class = {
+        "PASS": "download-status-pass",
+        "REVIEW": "download-status-review",
+        "FAIL": "download-status-fail",
+    }.get(status, "download-status-neutral")
+
+    segment_download_rows.append(
+        {
+            "Segment": html.escape(segment),
+            "Consensus length": f'{int(segment_row["length"]):,} nt',
+            "QC status": (
+                f'<span class="download-status {status_class}">'
+                f'{html.escape(status)}</span>'
+            ),
+            "Consensus": consensus_link,
+            "Variant calls": variant_summary,
+            "VCF": vcf_link,
+        }
+    )
+
+segment_downloads = pd.DataFrame(segment_download_rows)
+merged_consensus = sample_dir / "merged" / "consensus_all_segments.fasta"
+merged_available = merged_consensus.exists() and merged_consensus.stat().st_size > 0
+
+if merged_available:
+    merged_href = file_data_uri(merged_consensus, "text/plain;charset=utf-8")
+    merged_link = (
+        '<a class="file-download-link file-download-primary" '
+        f'href="{merged_href}" '
+        f'download="{html.escape(str(sample_id))}_consensus_all_segments.fasta">'
+        '<span aria-hidden="true">↓</span> Download combined consensus FASTA</a>'
+    )
+else:
+    merged_link = '<span class="file-unavailable">Combined consensus FASTA not available</span>'
+
+files_html = (
+    '<div class="report-panel file-download-panel">'
+    '<div class="file-download-header">'
+    '<div>'
+    '<div class="file-download-title">Analysis-ready sequence files</div>'
+    '<div class="file-download-subtitle">Files download directly from this self-contained report.</div>'
+    '</div>'
+    f'<div class="file-download-primary-wrap">{merged_link}</div>'
+    '</div>'
+    '<div class="file-download-table-wrap">'
+    + segment_downloads.to_html(
+        index=False,
+        escape=False,
+        classes="report-table file-download-table",
+    )
+    + '</div>'
+    '<div class="file-download-note">'
+    'Variant counts include non-header records in each valid VCF. A zero-variant VCF is valid and remains downloadable. '
+    'Segments that fail coverage are reported as skipped rather than as having zero variants. '
+    'Clicking a FASTA or VCF link downloads the file without opening a separate browser tab.'
+    '</div>'
+    '</div>'
+)
+
+display(HTML(files_html))
+```
+
+
+## Pipeline provenance
+
+```{python}
+def command_output(command, cwd=None):
+    """Return the first non-empty line from a command, or None."""
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    output = (result.stdout or result.stderr).strip()
+    return output.splitlines()[0] if output else None
+
+
+resolved_summary = summary_file.resolve()
+try:
+    repo_root = resolved_summary.parents[3]
+except IndexError:
+    repo_root = Path.cwd().resolve()
+
+config_path = repo_root / "config.yaml"
+config_display = (
+    str(config_path.relative_to(repo_root))
+    if config_path.exists()
+    else "Not captured"
+)
+
+git_commit = command_output(
+    ["git", "rev-parse", "--short=12", "HEAD"],
+    cwd=repo_root,
+)
+git_status = command_output(
+    ["git", "status", "--porcelain"],
+    cwd=repo_root,
+)
+if git_commit:
+    workflow_revision = git_commit + (" (modified)" if git_status else "")
+else:
+    workflow_revision = "Not captured"
+
+snakemake_version = os.environ.get("REPORT_SNAKEMAKE_VERSION") or command_output(["snakemake", "--version"])
+quarto_version = command_output(["quarto", "--version"])
+
+# Medaka runs in a separate rule-specific environment, so recover the version
+# from the sample's Medaka logs rather than the reporting environment.
+sample_dir = resolved_summary.parent.parent
+medaka_version = None
+for medaka_log in sorted((sample_dir / "medaka").glob("*/medaka_variant.log")):
+    try:
+        for line in medaka_log.read_text(errors="replace").splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("medaka "):
+                medaka_version = stripped.split(maxsplit=1)[1]
+                break
+    except OSError:
+        continue
+    if medaka_version:
+        break
+
+analysis_time = datetime.now().astimezone().isoformat(timespec="seconds")
+
+provenance_rows = [
+    ("Sample", str(sample_id)),
+    ("Analysis completed", analysis_time),
+    ("Workflow revision", workflow_revision),
+    ("Configuration", config_display),
+    ("Snakemake", snakemake_version or "Not captured"),
+    ("Medaka", medaka_version or "Not captured"),
+    ("Quarto", quarto_version or "Not captured"),
+    ("Python", platform.python_version()),
+    ("Coverage threshold", f"{float(coverage_threshold):g}x median depth"),
+]
+
+provenance_df = pd.DataFrame(
+    provenance_rows,
+    columns=["Item", "Value"],
+)
+
+length_rows = [
+    {
+        "Segment": segment,
+        "Expected complete length": f"{minimum:,}–{maximum:,} nt",
+    }
+    for segment, (minimum, maximum) in expected_lengths.items()
+]
+length_df = pd.DataFrame(length_rows)
+
+provenance_html = (
+    '<div class="report-panel">'
+    '<div class="file-download-title">Reproducibility record</div>'
+    '<div class="file-download-subtitle">Versions and thresholds captured when this report was rendered.</div>'
+    '<div class="file-download-table-wrap">'
+    + provenance_df.to_html(
+        index=False,
+        escape=True,
+        classes="report-table provenance-table",
+    )
+    + '</div>'
+    '<div class="file-download-title" style="margin-top: 1.25rem;">Expected segment-length ranges</div>'
+    '<div class="file-download-table-wrap">'
+    + length_df.to_html(
+        index=False,
+        escape=True,
+        classes="report-table provenance-table",
+    )
+    + '</div>'
+    '<div class="file-download-note">'
+    'A workflow revision marked “modified” indicates uncommitted repository changes at render time. '
+    '“Not captured” means the executable or metadata was unavailable to the reporting environment.'
+    '</div>'
+    '</div>'
+)
+
+display(HTML(provenance_html))
+```
+
 
 ## Interpretation
 
@@ -231,28 +992,51 @@ interpretation = []
 
 if int(row["segments_pass"]) == 8:
     interpretation.append(
-        "All eight influenza A segments passed the configured coverage threshold."
+        "All eight influenza A segments passed the "
+        "configured coverage threshold."
     )
 else:
     interpretation.append(
-        f'{int(row["segments_pass"])} of 8 influenza A segments passed the '
-        "configured coverage threshold."
+        f'{int(row["segments_pass"])} of 8 influenza A '
+        "segments passed the configured coverage threshold."
     )
 
 if row["h5n1_screen"] == "PASS":
     interpretation.append(
-        "The sample met the pipeline's IRMA-supported H5N1 screening criterion."
+        "The sample met the pipeline's IRMA-supported "
+        "H5N1 screening criterion."
     )
 else:
     interpretation.append(
-        "The sample did not meet the pipeline's H5N1 screening criterion."
+        "The sample did not meet the pipeline's "
+        "H5N1 screening criterion."
     )
 
 if str(row["failed_segment_names"]) != "NONE":
-    failed = str(row["failed_segment_names"]).replace(",", ", ")
-    interpretation.append(f"Segments requiring review: {failed}.")
+    failed = str(
+        row["failed_segment_names"]
+    ).replace(",", ", ")
 
-display(Markdown("\n".join(f"- {item}" for item in interpretation)))
+    interpretation.append(
+        f"Segments requiring review: {failed}."
+    )
+
+interpretation_html = "".join(
+    f"<li>{item}</li>"
+    for item in interpretation
+)
+
+display(
+    HTML(
+        f"""
+        <div class="report-panel">
+          <ul>
+            {interpretation_html}
+          </ul>
+        </div>
+        """
+    )
+)
 ```
 
 > **Interpretation note:** The H5N1 result is an IRMA-supported analytical screening flag. It is not an independent confirmatory subtype test and should be interpreted with coverage, controls, sequence quality, and other samples from the sequencing run.

@@ -1,0 +1,667 @@
+---
+title: "ESCAPE Avian Influenza Pipeline Results"
+subtitle: "Run Summary Report"
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 2
+    page-layout: full
+    embed-resources: true
+    css: report/sample-report.css
+    include-after-body: report/escape-report.html
+execute:
+  echo: false
+  warning: false
+  message: false
+params:
+  results_dir: "../../results"
+  samples: ""
+  run_summary_tsv: "run_summary.tsv"
+  review_tsv: "samples_requiring_review.tsv"
+---
+
+```{r setup}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(htmltools)
+library(knitr)
+library(gt)
+
+sample_ids <- trimws(strsplit(params$samples, ",", fixed = TRUE)[[1]])
+sample_ids <- sample_ids[nzchar(sample_ids)]
+
+if (length(sample_ids) == 0) {
+  stop("No sample IDs were supplied through the 'samples' parameter.")
+}
+
+sample_summary_paths <- file.path(
+  params$results_dir,
+  sample_ids,
+  "summary",
+  paste0(sample_ids, ".sample_summary.tsv")
+)
+
+missing_paths <- sample_summary_paths[!file.exists(sample_summary_paths)]
+if (length(missing_paths) > 0) {
+  stop(
+    "Missing sample summary file(s):\n",
+    paste(missing_paths, collapse = "\n")
+  )
+}
+
+summary_rows <- Map(
+  function(path, configured_sample_id) {
+    sample_row <- read_tsv(path, show_col_types = FALSE)
+
+    if (nrow(sample_row) == 0) {
+      stop("Sample summary file is empty: ", path)
+    }
+
+    # Older sample-summary files do not always contain a sample_id column.
+    # Prefer an existing sample/sample_id value, but fall back to the sample
+    # identifier supplied by Snakemake and used to construct this file path.
+    if (!"sample_id" %in% names(sample_row)) {
+      if ("sample" %in% names(sample_row)) {
+        sample_row <- sample_row |>
+          rename(sample_id = sample)
+      } else {
+        sample_row$sample_id <- configured_sample_id
+      }
+    }
+
+    sample_row$sample_id <- as.character(sample_row$sample_id)
+    missing_sample_id <- is.na(sample_row$sample_id) |
+      !nzchar(trimws(sample_row$sample_id))
+    sample_row$sample_id[missing_sample_id] <- configured_sample_id
+
+    sample_row
+  },
+  sample_summary_paths,
+  sample_ids
+)
+
+summary <- bind_rows(summary_rows)
+
+# Normalize segment-count column names across sample-summary versions.
+# The current sample-summary generator uses `segments_pass`, while some older
+# run-summary tables used `pass_segments`.
+if (!"pass_segments" %in% names(summary)) {
+  if ("segments_pass" %in% names(summary)) {
+    summary <- summary |>
+      rename(pass_segments = segments_pass)
+  } else if ("coverage_segments" %in% names(summary)) {
+    summary <- summary |>
+      mutate(pass_segments = coverage_segments)
+  } else if ("segments_detected" %in% names(summary)) {
+    summary <- summary |>
+      mutate(pass_segments = segments_detected)
+  } else {
+    stop(
+      "The sample summary files do not contain any recognized passing-segment ",
+      "column (expected one of: pass_segments, segments_pass, ",
+      "coverage_segments, segments_detected)."
+    )
+  }
+}
+
+summary <- summary |>
+  mutate(
+    pass_segments = suppressWarnings(as.numeric(pass_segments)),
+    pass_segments = coalesce(pass_segments, 0)
+  )
+
+# Retain a normalized detected-segment count when available.
+if (!"coverage_segments" %in% names(summary)) {
+  if ("segments_detected" %in% names(summary)) {
+    summary <- summary |>
+      mutate(coverage_segments = suppressWarnings(as.numeric(segments_detected)))
+  } else {
+    summary$coverage_segments <- summary$pass_segments
+  }
+}
+
+if (!"genome_status" %in% names(summary)) {
+  summary <- summary |>
+    mutate(
+      genome_status = case_when(
+        pass_segments == 8 ~ "Complete",
+        pass_segments >= 6 ~ "Near-complete",
+        pass_segments >= 1 ~ "Partial",
+        TRUE ~ "Failed"
+      )
+    )
+}
+
+if (!"review_required" %in% names(summary)) {
+  if ("review_flags" %in% names(summary)) {
+    normalized_flags <- toupper(trimws(as.character(summary$review_flags)))
+    flag_review <- !is.na(normalized_flags) &
+      nzchar(normalized_flags) &
+      !normalized_flags %in% c("NONE", "NA", "N/A", "CLEAR", "OK")
+    summary$review_required <- flag_review | summary$pass_segments < 8
+  } else {
+    summary$review_required <- summary$pass_segments < 8
+  }
+} else if (is.logical(summary$review_required)) {
+  summary$review_required <- coalesce(summary$review_required, FALSE)
+} else {
+  summary$review_required <-
+    tolower(trimws(as.character(summary$review_required))) %in%
+    c("true", "t", "1", "yes", "y")
+}
+
+if (!"review_reason" %in% names(summary)) {
+  if ("review_flags" %in% names(summary)) {
+    flags <- trimws(as.character(summary$review_flags))
+    flags[toupper(flags) %in% c("NONE", "NA", "N/A", "CLEAR", "OK", "")] <- NA_character_
+    summary$review_reason <- ifelse(
+      summary$review_required,
+      ifelse(
+        is.na(flags),
+        paste0("Genome status: ", summary$genome_status),
+        gsub(";", "; ", flags, fixed = TRUE)
+      ),
+      NA_character_
+    )
+  } else {
+    summary$review_reason <- ifelse(
+      summary$review_required,
+      paste0("Genome status: ", summary$genome_status),
+      NA_character_
+    )
+  }
+}
+
+# Derive compact HA/NA calls from contig names when explicit calls are absent.
+extract_subtype <- function(values, prefix) {
+  values <- as.character(values)
+  pattern <- paste0(".*(", prefix, "[0-9]+).*")
+  matched <- grepl(pattern, values, ignore.case = TRUE)
+  result <- rep(NA_character_, length(values))
+  result[matched] <- toupper(sub(pattern, "\\1", values[matched], ignore.case = TRUE))
+  result
+}
+
+if (!"ha_call" %in% names(summary) && "ha_contig" %in% names(summary)) {
+  summary$ha_call <- extract_subtype(summary$ha_contig, "H")
+}
+
+if (!"na_call" %in% names(summary) && "na_contig" %in% names(summary)) {
+  summary$na_call <- extract_subtype(summary$na_contig, "N")
+}
+
+if (!"potential_subtype" %in% names(summary)) {
+  ha_value <- if ("ha_call" %in% names(summary)) as.character(summary$ha_call) else NA_character_
+  na_value <- if ("na_call" %in% names(summary)) as.character(summary$na_call) else NA_character_
+  summary$potential_subtype <- case_when(
+    !is.na(ha_value) & nzchar(ha_value) & !is.na(na_value) & nzchar(na_value) ~ paste0(ha_value, na_value),
+    !is.na(ha_value) & nzchar(ha_value) ~ ha_value,
+    !is.na(na_value) & nzchar(na_value) ~ na_value,
+    TRUE ~ "Undetermined"
+  )
+}
+
+if (!"subtype_min_median_depth" %in% names(summary)) {
+  ha_depth <- if ("ha_median_depth" %in% names(summary)) suppressWarnings(as.numeric(summary$ha_median_depth)) else rep(NA_real_, nrow(summary))
+  na_depth <- if ("na_median_depth" %in% names(summary)) suppressWarnings(as.numeric(summary$na_median_depth)) else rep(NA_real_, nrow(summary))
+  summary$subtype_min_median_depth <- ifelse(
+    is.na(ha_depth) & is.na(na_depth),
+    NA_real_,
+    pmin(ha_depth, na_depth, na.rm = TRUE)
+  )
+}
+
+column_defaults <- list(
+  host = "Unknown",
+  potential_subtype = "Undetermined",
+  ha_call = NA_character_,
+  na_call = NA_character_,
+  subtype_min_median_depth = NA_real_,
+  aa_changes = NA_real_,
+  synonymous_changes = NA_real_,
+  nonsynonymous_changes = NA_real_
+)
+
+for (column_name in names(column_defaults)) {
+  if (!column_name %in% names(summary)) {
+    summary[[column_name]] <- column_defaults[[column_name]]
+  }
+}
+
+# Normalize missing subtype calls for display and export. The influenza A
+# segment name "NA" is retained; only absent subtype calls become "Unknown".
+normalize_subtype_call <- function(values) {
+  values <- trimws(as.character(values))
+  missing_call <- is.na(values) |
+    !nzchar(values) |
+    toupper(values) %in% c("NA", "N/A", "NONE", "NO_HIT", "UNDETERMINED")
+  values[missing_call] <- "Unknown"
+  values
+}
+
+summary <- summary |>
+  mutate(
+    ha_call = normalize_subtype_call(ha_call),
+    na_call = normalize_subtype_call(na_call),
+    potential_subtype = normalize_subtype_call(potential_subtype)
+  ) |>
+  arrange(sample_id)
+
+review <- summary |>
+  filter(review_required)
+
+write_tsv(summary, params$run_summary_tsv)
+write_tsv(review, params$review_tsv)
+
+host_values <- if ("host" %in% names(summary)) {
+  unique(na.omit(summary$host))
+} else {
+  character(0)
+}
+
+metadata <- tibble(
+  Metric = c("Run date", "Host", "Pipeline version"),
+  Value = c(
+    format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    if (length(host_values) > 0) paste(host_values, collapse = ", ") else "Not available",
+    "1.0.0"
+  )
+)
+```
+
+## Overview
+
+```{r}
+total_samples <- nrow(summary)
+
+complete_n <- sum(summary$pass_segments == 8, na.rm = TRUE)
+near_complete_n <- sum(
+  summary$pass_segments >= 6 & summary$pass_segments < 8,
+  na.rm = TRUE
+)
+partial_n <- sum(
+  summary$pass_segments >= 1 & summary$pass_segments < 6,
+  na.rm = TRUE
+)
+failed_n <- sum(summary$pass_segments == 0, na.rm = TRUE)
+
+overview <- tibble(
+  Metric = c("Samples", "Complete", "Near-complete", "Partial", "Failed"),
+  Count = c(
+    total_samples,
+    complete_n,
+    near_complete_n,
+    partial_n,
+    failed_n
+  ),
+  Percent = c(
+    1,
+    complete_n / max(total_samples, 1),
+    near_complete_n / max(total_samples, 1),
+    partial_n / max(total_samples, 1),
+    failed_n / max(total_samples, 1)
+  )
+)
+
+overview |>
+  gt(rowname_col = "Metric") |>
+  tab_header(
+    title = "Run Overview",
+    subtitle = "Genome completeness across all samples"
+  ) |>
+  fmt_percent(columns = Percent, decimals = 0) |>
+  cols_label(
+    Count = "Count",
+    Percent = "Percent"
+  ) |>
+  tab_style(
+    style = cell_fill(color = "#F2F2F2"),
+    locations = cells_body(rows = Metric == "Samples")
+  ) |>
+  tab_style(
+    style = cell_fill(color = "#E7F4EA"),
+    locations = cells_body(rows = Metric == "Complete")
+  ) |>
+  tab_style(
+    style = cell_fill(color = "#FFF3CD"),
+    locations = cells_body(rows = Metric == "Near-complete")
+  ) |>
+  tab_style(
+    style = cell_fill(color = "#FCE8DC"),
+    locations = cells_body(rows = Metric == "Partial")
+  ) |>
+  tab_style(
+    style = cell_fill(color = "#F4D6DC"),
+    locations = cells_body(rows = Metric == "Failed")
+  ) |>
+  tab_style(
+    style = list(
+      cell_fill(color = "#8C1D40"),
+      cell_text(color = "white")
+    ),
+    locations = cells_title(groups = "title")
+  ) |>
+  tab_style(
+    style = list(
+      cell_fill(color = "#8C1D40"),
+      cell_text(color = "white")
+    ),
+    locations = cells_title(groups = "subtitle")
+  ) |>
+  tab_options(
+    table.width = pct(100),
+    table.font.size = px(14),
+    heading.title.font.size = px(20),
+    heading.subtitle.font.size = px(14),
+    column_labels.font.weight = "normal",
+    data_row.padding = px(8)
+  )
+```
+
+```{r}
+metadata |>
+  gt() |>
+  tab_options(
+    table.width = pct(60),
+    table.font.size = px(14),
+    data_row.padding = px(8)
+  )
+```
+
+## ⚠ Samples Requiring Immediate Review
+
+```{r}
+n_review <- nrow(review)
+
+if (n_review == 0) {
+  div(
+    class = "alert alert-success",
+    h4("✓ No samples require manual review."),
+    p("All samples passed the configured QC thresholds.")
+  )
+} else {
+  div(
+    class = "alert alert-warning",
+    h4(sprintf("%d sample(s) require manual review", n_review)),
+    p("These samples failed one or more quality-control criteria. Review these before downstream analyses.")
+  )
+
+  review |>
+    mutate(
+      sample_id = sprintf(
+        "[%s](../%s/summary/%s.sample_summary.html)",
+        sample_id,
+        sample_id,
+        sample_id
+      )
+    ) |>
+    select(
+      sample_id,
+      host,
+      potential_subtype,
+      genome_status,
+      review_reason
+    ) |>
+    gt() |>
+    fmt_markdown(columns = sample_id) |>
+    cols_label(sample_id = "Sample") |>
+    tab_options(
+      table.width = pct(100),
+      table.font.size = px(13),
+      heading.background.color = "#8C1D40",
+      heading.title.font.size = px(18)
+    )
+}
+```
+
+## Sample Summary
+
+```{r}
+sample_table <-
+  summary %>%
+  mutate(
+    sample_id = sprintf(
+      "[%s](../%s/summary/%s.sample_summary.html)",
+      sample_id,
+      sample_id,
+      sample_id
+    ),
+    QC = genome_status,
+    Review = if_else(
+      review_required,
+      "REVIEW",
+      "PASS"
+    )
+  ) %>%
+  select(
+    sample_id,
+    QC,
+    Review,
+    host,
+    potential_subtype,
+    ha_call,
+    na_call,
+    pass_segments,
+    subtype_min_median_depth,
+    aa_changes,
+    synonymous_changes,
+    nonsynonymous_changes
+  )
+
+sample_table |>
+  gt() |>
+  tab_header(
+    title = "Sample Summary"
+  ) |>
+  cols_label(
+    sample_id = "Sample",
+    QC = "QC Status",
+    Review = "Review",
+    host = "Host",
+    potential_subtype = "Predicted Subtype",
+    ha_call = "HA",
+    na_call = "NA",
+    pass_segments = "Passing Segments",
+    subtype_min_median_depth = "Min Median Depth",
+    aa_changes = "AA Changes",
+    synonymous_changes = "Synonymous",
+    nonsynonymous_changes = "Nonsynonymous"
+  ) |>
+  fmt_markdown(columns = sample_id) |>
+  tab_options(
+    table.width = pct(100),
+    table.font.size = px(13),
+    heading.background.color = "#8C1D40",
+    heading.title.font.size = px(18)
+  )
+```
+
+## Genome Completeness
+
+```{r}
+asu_palette <- c(
+  Complete = "#8C1D40",
+  "Near-complete" = "#A95670FF",
+  Partial = "#C58E9FFF",
+  Failed = "#DFC9CFFF"
+)
+
+genome_status <-
+  summary %>%
+  count(genome_status) %>%
+  mutate(
+    genome_status = factor(
+      genome_status,
+      levels = c("Complete", "Near-complete", "Partial", "Failed")
+    )
+  )
+
+p <- ggplot(
+  genome_status,
+  aes(
+    genome_status,
+    n,
+    fill = genome_status
+  )
+) +
+  geom_col(width = 0.7) +
+  geom_text(
+    aes(label = n),
+    vjust = -0.3,
+    size = 5
+  ) +
+  scale_fill_manual(values = asu_palette) +
+  labs(
+    x = "Genome Status",
+    y = "Samples"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none"
+  )
+
+p
+```
+
+## HA Subtype Distribution
+
+```{r}
+ha_counts <- summary %>%
+  count(ha_call)
+
+p <- ggplot(
+  ha_counts,
+  aes(
+    x = reorder(ha_call, n),
+    y = n
+  )
+) +
+  geom_col(
+    fill = "#8C1D40",
+    width = 0.7
+  ) +
+  coord_flip() +
+  labs(
+    x = "HA Subtype",
+    y = "Samples"
+  ) +
+  theme_minimal(base_size = 14)
+
+p
+```
+
+## NA Subtype Distribution
+
+```{r}
+na_counts <- summary %>%
+  count(na_call)
+
+p <- ggplot(
+  na_counts,
+  aes(
+    x = reorder(na_call, n),
+    y = n
+  )
+) +
+  geom_col(
+    fill = "#FFC627",
+    width = 0.7
+  ) +
+  coord_flip() +
+  labs(
+    x = "NA Subtype",
+    y = "Samples"
+  ) +
+  theme_minimal(base_size = 14)
+
+p
+```
+
+## Host Distribution
+
+```{r}
+host_counts <-
+  summary %>%
+  count(host)
+
+p <- ggplot(
+  host_counts,
+  aes(
+    reorder(host, n),
+    n
+  )
+) +
+  geom_col(
+    fill = "#8C1D40",
+    width = 0.7
+  ) +
+  coord_flip() +
+  labs(
+    x = "Host",
+    y = "Samples"
+  ) +
+  theme_minimal(base_size = 14)
+
+p
+```
+
+## Average Coverage
+
+```{r}
+p <- ggplot(
+  summary,
+  aes(subtype_min_median_depth)
+) +
+  geom_histogram(
+    bins = 30,
+    fill = "#8C1D40",
+    color = "white"
+  ) +
+  labs(
+    x = "Mean depth",
+    y = "Samples"
+  ) +
+  theme_minimal(base_size = 14)
+
+p
+```
+
+## Sequencing Depth Distribution
+
+```{r}
+p <- ggplot(
+  summary,
+  aes(pass_segments)
+) +
+  geom_histogram(
+    binwidth = 1,
+    fill = "#FFC627",
+    color = "white"
+  ) +
+  scale_x_continuous(breaks = 0:8) +
+  labs(
+    x = "Passing genome segments",
+    y = "Samples"
+  ) +
+  theme_minimal(base_size = 14)
+
+p
+```
+
+## Publication-quality Summary Figure
+
+::: {.center-figure}
+
+```{r}
+figure_path <- "figures/run_summary.png"
+
+if (file.exists(figure_path)) {
+  knitr::include_graphics(figure_path)
+} else {
+  cat("Publication-quality summary figure was not generated for this run.")
+}
+```
+
+:::

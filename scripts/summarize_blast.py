@@ -1,36 +1,40 @@
 #!/usr/bin/env python3
-"""
-Summarise per-segment BLASTn results into a single CSV.
+"""Summarize per-segment BLAST output while retaining all eight segments."""
 
-Expected Snakemake variables
-----------------------------
-* snakemake.input  : list of BLAST 6-column files (one per segment)
-* snakemake.output : length-1 list; where to write the CSV
-"""
 
-import pandas as pd
+import csv
 from pathlib import Path
 
-rows = []
+SEGMENTS = ("HA", "NA", "PB2", "PB1", "PA", "NP", "MP", "NS")
 
-for blast_file in snakemake.input:
-    blast_path = Path(blast_file)
-    # barcode20/blast/PB2.blast.txt  → sample=barcode20, segment=PB2
-    sample  = blast_path.parents[1].name
-    segment = blast_path.stem.split(".")[0]
 
-    # BLAST -outfmt 6 columns (qseqid sseqid pident etc.)
-    # Keep the first (best-scoring) hit; BLAST sorts by bit-score by default.
-    try:
-        top_hit = pd.read_csv(blast_file, sep="\t", header=None).iloc[0, 1]
-    except (pd.errors.EmptyDataError, IndexError):
-        top_hit = "NO_HIT"
+def top_hit(path: Path) -> str:
+    if not path.is_file() or path.stat().st_size == 0:
+        return "NO_HIT"
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) >= 2:
+                return fields[1]
+    return "NO_HIT"
 
-    rows.append({"sample": sample, "segment": segment, "top_hit": top_hit})
 
-# Combine and write
-out_csv = snakemake.output[0]
-Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
-pd.DataFrame(rows).to_csv(out_csv, index=False)
+sample = str(snakemake.wildcards.sample)
+by_segment = {
+    Path(path).name.split(".blast.txt")[0]: Path(path)
+    for path in snakemake.input.blast_files
+}
+output_path = Path(snakemake.output.csv)
+output_path.parent.mkdir(parents=True, exist_ok=True)
 
-print(f"★ Wrote BLAST summary {out_csv}")
+with output_path.open("w", newline="", encoding="utf-8") as handle:
+    writer = csv.DictWriter(handle, fieldnames=["sample", "segment", "top_hit"])
+    writer.writeheader()
+    for segment in SEGMENTS:
+        writer.writerow(
+            {
+                "sample": sample,
+                "segment": segment,
+                "top_hit": top_hit(by_segment[segment]) if segment in by_segment else "NO_HIT",
+            }
+        )
