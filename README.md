@@ -578,7 +578,7 @@ results/run_summary/run_summary.html
 
 ### Sample report
 
-Each sample report summarizes read filtering, segment recovery, coverage, BLAST assignments, H5N1 screening, GenoFLU results, VADR status, and review flags. The report is self-contained HTML and can be opened locally in a web browser.
+Each sample report summarizes read filtering, segment recovery, coverage, BLAST assignments, H5N1 screening, GenoFLU results, VADR status, and review flags. Reports are generated as self-contained HTML. For reliable navigation between the run summary and individual sample reports, use the included local report server.
 
 Build one sample report with:
 
@@ -857,8 +857,7 @@ Please cite the underlying tools used in an analysis according to their respecti
 
 Planned or under-development enhancements include:
 
-- Expanded interactive run-level visualizations
-- Segment-recovery and coverage heatmaps
+- Additional interactive run-level visualizations and comparative views
 - Improved genotype visualizations
 - Automated public-health narrative summaries
 - Additional export formats, including PDF
