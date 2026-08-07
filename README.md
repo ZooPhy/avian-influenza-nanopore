@@ -81,6 +81,7 @@ NanoPlot is also available as an optional raw-read quality-control target.
 ```text
 .
 ├── Snakefile
+├── view_reports.sh                    # convenience launcher for local HTML reports
 ├── config.yaml                       # local configuration; not committed
 ├── config/
 │   └── config.example.yaml
@@ -99,6 +100,7 @@ NanoPlot is also available as an optional raw-read quality-control target.
 │   ├── check_coverage.py
 │   ├── coverage_table.py
 │   ├── normalize_irma_outputs.py
+│   ├── serve_reports.py
 │   ├── summarize_blast.py
 │   ├── sample_summary.qmd
 │   ├── run_summary.qmd
@@ -603,6 +605,44 @@ snakemake \
 ```
 
 Because the run summary depends on all sample reports, target an individual sample report when rerunning only one barcode.
+
+### View reports locally
+
+The run summary links to the individual sample HTML reports. Some browsers, including Safari, restrict navigation between local `file://` HTML documents. To preserve working links between the run summary and sample reports, serve the `results/` directory through the included local report server.
+
+The simplest way to launch the reports from the repository root is:
+
+```bash
+./view_reports.sh
+```
+
+The wrapper starts `scripts/serve_reports.py`, which by default binds only to the local loopback interface and opens:
+
+```text
+http://127.0.0.1:4174/run_summary/run_summary.html
+```
+
+The report server serves the existing static HTML reports from the local `results/` directory. It does not upload sequencing data or expose the reports to the network.
+
+Press `Ctrl+C` to stop the server.
+
+The Python launcher can also be run directly:
+
+```bash
+python scripts/serve_reports.py
+```
+
+To use another port:
+
+```bash
+python scripts/serve_reports.py --port 8080
+```
+
+To start the server without automatically opening a browser:
+
+```bash
+python scripts/serve_reports.py --no-browser
+```
 
 ## Coverage criterion
 
