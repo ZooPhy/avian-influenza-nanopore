@@ -1,5 +1,5 @@
 ---
-title: "WINGS — Wild-bird Influenza Genomics and Surveillance"
+title: ""
 format:
   html:
     toc: true
@@ -115,10 +115,8 @@ reads_after = int(row["reads_after"])
 ```{python}
 header_html = f"""
 <div class="report-header">
-  <div class="report-brand-mark" aria-hidden="true">
-    <span></span>
-    <span></span>
-    <span></span>
+  <div class="report-brand-logo">
+    <img src="wings_logo.jpg" alt="WINGS logo">
   </div>
 
   <div class="report-title-group">
@@ -187,8 +185,6 @@ header_html = f"""
 
 display(HTML(header_html))
 ```
-
-## Analytical overview
 
 ```{python}
 overview = pd.DataFrame(

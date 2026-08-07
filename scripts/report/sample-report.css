@@ -49,20 +49,6 @@ a:hover, a:focus { color: var(--escape-maroon-dark); }
   padding: 1.15rem 1.3rem;
 }
 
-.report-brand-mark {
-  display: grid;
-  gap: 0.22rem;
-  width: 2.1rem;
-}
-.report-brand-mark span {
-  background: var(--escape-gold);
-  border-radius: 99px;
-  display: block;
-  height: 0.28rem;
-}
-.report-brand-mark span:nth-child(2) { width: 78%; }
-.report-brand-mark span:nth-child(3) { width: 56%; }
-
 .report-title { font-size: clamp(1.15rem, 2vw, 1.55rem); font-weight: 750; }
 .report-subtitle { color: rgba(255,255,255,.82); font-size: 0.92rem; }
 .report-local-badge {
@@ -251,4 +237,66 @@ a:hover, a:focus { color: var(--escape-maroon-dark); }
 }
 @media (prefers-reduced-motion: reduce) {
   .escape-segment-fill { animation:none; }
+}
+
+.report-brand-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.report-brand-logo img {
+  display: block;
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  background: #fff;
+  border-radius: 10px;
+  padding: 0.25rem;
+}
+
+.metric-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.metric-value {
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.metric-detail {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+/* Embedded WINGS viewer responsiveness */
+.metric-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.metric-label,
+.metric-value,
+.metric-detail {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.metric-value {
+  font-size: clamp(1.35rem, 2vw, 2rem);
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.metric-detail {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@media (max-width: 1200px) {
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }

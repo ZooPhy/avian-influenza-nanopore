@@ -250,13 +250,18 @@ if RUN_VADR:
     )
 
 if RUN_SUMMARY:
-    FINAL_TARGETS.append(f"{RESULTS}/run_summary/run_summary.html")
+    FINAL_TARGETS.extend(
+        [
+            f"{RESULTS}/run_summary/run_summary.html",
+            f"{RESULTS}/wings_report_bundle.wings",
+        ]
+    )
 
 
 rule all:
     input:
         FINAL_TARGETS
-
+    
 
 # -----------------------------------------------------------------------------
 # NanoPlot
@@ -1177,7 +1182,8 @@ rule sample_summary_html:
         vadr_log=f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.log",
         css="scripts/report/sample-report.css",
         report_html="scripts/report/escape-report.html",
-        report_js="scripts/report/escape-report.js"
+        report_js="scripts/report/escape-report.js",
+        logo="wings_logo.jpg"
     output:
         html=f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.html"
     params:
@@ -1199,6 +1205,7 @@ rule sample_summary_html:
         css_abs="$(cd "$(dirname {input.css:q})" && pwd)/$(basename {input.css:q})"
         report_html_abs="$(cd "$(dirname {input.report_html:q})" && pwd)/$(basename {input.report_html:q})"
         report_js_abs="$(cd "$(dirname {input.report_js:q})" && pwd)/$(basename {input.report_js:q})"
+        logo_abs="$(cd "$(dirname {input.logo:q})" && pwd)/$(basename {input.logo:q})"
 
         temp_qmd="$output_dir/.sample_summary.qmd"
         temp_report_dir="$output_dir/report"
@@ -1209,6 +1216,7 @@ rule sample_summary_html:
         cp "$css_abs" "$temp_report_dir/sample-report.css"
         cp "$report_html_abs" "$temp_report_dir/escape-report.html"
         cp "$report_js_abs" "$temp_report_dir/escape-report.js"
+        cp "$logo_abs" "$output_dir/wings_logo.jpg"
 
         (
             cd "$output_dir"
@@ -1226,6 +1234,7 @@ rule sample_summary_html:
             )
 
         rm -f "$temp_qmd"
+        rm -f "$output_dir/wings_logo.jpg"
         rm -rf "$output_dir/.sample_summary_files"
         rm -rf "$temp_report_dir"
         """
@@ -1259,7 +1268,8 @@ rule run_summary_html:
         template="scripts/run_summary.qmd",
         css="scripts/report/sample-report.css",
         report_html="scripts/report/escape-report.html",
-        report_js="scripts/report/escape-report.js"
+        report_js="scripts/report/escape-report.js",
+        logo="wings_logo.jpg"
     output:
         html=f"{RESULTS}/run_summary/run_summary.html",
         tsv=f"{RESULTS}/run_summary/run_summary.tsv",
@@ -1280,6 +1290,7 @@ rule run_summary_html:
         css_abs="$(cd "$(dirname {input.css:q})" && pwd)/$(basename {input.css:q})"
         report_html_abs="$(cd "$(dirname {input.report_html:q})" && pwd)/$(basename {input.report_html:q})"
         report_js_abs="$(cd "$(dirname {input.report_js:q})" && pwd)/$(basename {input.report_js:q})"
+        logo_abs="$(cd "$(dirname {input.logo:q})" && pwd)/$(basename {input.logo:q})"
 
         temp_qmd="$output_dir/.run_summary.qmd"
         temp_report_dir="$output_dir/report"
@@ -1289,6 +1300,7 @@ rule run_summary_html:
         cp "$css_abs" "$temp_report_dir/sample-report.css"
         cp "$report_html_abs" "$temp_report_dir/escape-report.html"
         cp "$report_js_abs" "$temp_report_dir/escape-report.js"
+        cp "$logo_abs" "$output_dir/wings_logo.jpg"
 
         (
             cd "$output_dir"
@@ -1303,8 +1315,32 @@ rule run_summary_html:
         )
 
         rm -f "$temp_qmd"
+        rm -f "$output_dir/wings_logo.jpg"
         rm -rf "$output_dir/.run_summary_files"
         rm -rf "$temp_report_dir"
+        """
+
+
+# -----------------------------------------------------------------------------
+# Build a portable WINGS report bundle for browser-based local viewing
+# -----------------------------------------------------------------------------
+rule wings_report_bundle:
+    input:
+        run_summary=f"{RESULTS}/run_summary/run_summary.html",
+        reports=expand(
+            f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.html",
+            sample=SAMPLES,
+        ),
+        builder="scripts/build_report_bundle.py"
+    output:
+        bundle=f"{RESULTS}/wings_report_bundle.wings"
+    shell:
+        r"""
+        set -euo pipefail
+        python {input.builder:q} \
+          --run-summary {input.run_summary:q} \
+          --output {output.bundle:q} \
+          {input.reports:q}
         """
 
 

@@ -272,10 +272,8 @@ metadata <- tibble(
 
 ```{=html}
 <div class="report-header">
-  <div class="report-brand-mark" aria-hidden="true">
-    <span></span>
-    <span></span>
-    <span></span>
+  <div class="report-brand-logo">
+    <img src="wings_logo.jpg" alt="WINGS logo">
   </div>
 
   <div class="report-title-group">
@@ -331,7 +329,8 @@ overview <- tibble(
 overview |>
   gt(rowname_col = "Metric") |>
   tab_header(
-    title = "Genome completeness across all samples"
+    title = "Run Overview",
+    subtitle = "Genome completeness across all samples"
   ) |>
   fmt_percent(columns = Percent, decimals = 0) |>
   cols_label(
