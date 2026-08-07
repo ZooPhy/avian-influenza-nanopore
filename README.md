@@ -1,8 +1,10 @@
-# ESCAPE
+# WINGS
 
-**Enhanced Sequencing and Characterization of Avian Pathogens Engine**
+**Wild-bird Influenza Genomics and Surveillance**
 
-ESCAPE is a portable Snakemake workflow for genomic analysis of avian influenza A virus from Oxford Nanopore sequencing reads. It performs read preprocessing, influenza assembly, segment-level quality assessment, consensus polishing, variant calling, subtype screening, genotype assignment, annotation, and generation of interactive HTML reports.
+WINGS is a portable Snakemake workflow for genomic analysis of avian influenza A virus from Oxford Nanopore sequencing reads. It performs read preprocessing, influenza assembly, segment-level quality assessment, consensus polishing, variant calling, subtype screening, genotype assignment, annotation, and generation of interactive HTML reports.
+
+WINGS was developed in support of the **Pandemic ESCAPE Center**, with a focus on genomic epidemiology, bioinformatics, and surveillance of avian influenza viruses in wild birds.
 
 The workflow has been validated on:
 
@@ -161,7 +163,7 @@ Choose values appropriate for the physical RAM available on the host. Leave suff
 docker run --rm alpine sh -c 'free -h'
 ```
 
-ESCAPE now checks the IRMA log and expected outputs after execution. Internal failures such as a killed process, an out-of-memory condition, or `found no QC'd data` cause the workflow to stop instead of continuing to downstream reports.
+WINGS now checks the IRMA log and expected outputs after execution. Internal failures such as a killed process, an out-of-memory condition, or `found no QC'd data` cause the workflow to stop instead of continuing to downstream reports.
 
 ### Linux ARM64 cluster
 
@@ -836,7 +838,7 @@ resources/flu_db/
 
 ## Acknowledgements
 
-ESCAPE integrates or builds on the following projects:
+WINGS integrates or builds on the following projects:
 
 - Snakemake
 - CDC IRMA

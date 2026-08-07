@@ -1,5 +1,5 @@
 ---
-title: "ESCAPE Avian Influenza Pipeline Results"
+title: "WINGS — Wild-bird Influenza Genomics and Surveillance"
 subtitle: "Run Summary Report"
 format:
   html:
