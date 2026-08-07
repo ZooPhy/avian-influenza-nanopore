@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>WINGS | Wild-bird Influenza Genomics and Surveillance</title>
+
+  <meta
+    name="description"
+    content="WINGS is a bioinformatics workflow for genomic characterization and surveillance of avian influenza viruses from wild-bird samples."
+  >
+
+  <style>
+    :root {
+      --maroon: #8C1D40;
+      --gold: #FFC627;
+      --black: #191919;
+      --gray: #5c6670;
+      --light-gray: #f5f5f5;
+      --white: #ffffff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      color: var(--black);
+      background: var(--white);
+      line-height: 1.6;
+    }
+
+    header {
+      background: var(--maroon);
+      color: var(--white);
+      padding: 5rem 1.5rem 4rem;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .eyebrow {
+      color: var(--gold);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-size: clamp(3rem, 8vw, 6rem);
+      line-height: 1;
+      margin: 0;
+    }
+
+    .subtitle {
+      font-size: clamp(1.25rem, 3vw, 2rem);
+      margin-top: 1rem;
+      max-width: 850px;
+    }
+
+    main {
+      padding: 4rem 1.5rem;
+    }
+
+    section {
+      margin-bottom: 4rem;
+    }
+
+    h2 {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+    }
+
+    p {
+      font-size: 1.1rem;
+      max-width: 850px;
+    }
+
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 0.85rem 1.25rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 700;
+      border: 2px solid var(--maroon);
+    }
+
+    .button-primary {
+      background: var(--maroon);
+      color: var(--white);
+    }
+
+    .button-secondary {
+      background: var(--white);
+      color: var(--maroon);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 1.5rem;
+      margin-top: 2rem;
+    }
+
+    .card {
+      background: var(--light-gray);
+      padding: 1.5rem;
+      border-radius: 8px;
+      border-top: 4px solid var(--gold);
+    }
+
+    .card h3 {
+      margin-top: 0;
+    }
+
+    code {
+      background: #eeeeee;
+      padding: 0.15rem 0.35rem;
+      border-radius: 4px;
+    }
+
+    footer {
+      background: var(--black);
+      color: var(--white);
+      padding: 2rem 1.5rem;
+    }
+
+    footer a {
+      color: var(--gold);
+    }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <div class="container">
+    <div class="eyebrow">Avian Influenza Genomic Surveillance</div>
+
+    <h1>WINGS</h1>
+
+    <div class="subtitle">
+      Wild-bird Influenza Genomics and Surveillance
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="container">
+
+    <section>
+      <h2>About WINGS</h2>
+
+      <p>
+        WINGS is a portable Snakemake workflow for genomic characterization,
+        bioinformatics analysis, and surveillance of avian influenza A viruses
+        from wild-bird samples sequenced using Oxford Nanopore technologies.
+      </p>
+
+      <p>
+        The workflow integrates read preprocessing, influenza assembly,
+        segment-level quality assessment, consensus polishing, variant calling,
+        subtype screening, genotype assignment, annotation, and interactive
+        reporting to support genomic epidemiology and wildlife disease
+        surveillance.
+      </p>
+
+      <div class="buttons">
+        <a
+          class="button button-primary"
+          href="https://github.com/ZooPhy/avian-influenza-nanopore"
+        >
+          View on GitHub
+        </a>
+
+        <a
+          class="button button-secondary"
+          href="https://escape.engr.uky.edu/"
+        >
+          Pandemic ESCAPE Center
+        </a>
+      </div>
+    </section>
+
+    <section>
+      <h2>Pipeline capabilities</h2>
+
+      <div class="grid">
+
+        <div class="card">
+          <h3>Nanopore sequencing</h3>
+          <p>
+            Processes Oxford Nanopore reads for influenza A genomic analysis.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Genome assembly</h3>
+          <p>
+            Uses CDC IRMA for influenza genome assembly and segment recovery.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Genomic characterization</h3>
+          <p>
+            Performs consensus polishing, variant analysis, subtype screening,
+            genotype assignment, and sequence annotation.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Surveillance reporting</h3>
+          <p>
+            Generates sample-level and sequencing-run HTML reports for
+            reviewing genomic surveillance results.
+          </p>
+        </div>
+
+      </div>
+    </section>
+
+    <section>
+      <h2>Genomic epidemiology and surveillance</h2>
+
+      <p>
+        WINGS was designed to support genomic epidemiology of avian influenza
+        viruses detected through surveillance of wild birds. The workflow
+        provides a reproducible path from raw sequencing reads to curated
+        genomic outputs that can be used in downstream phylogenetic,
+        phylodynamic, and epidemiologic analyses.
+      </p>
+    </section>
+
+    <section>
+      <h2>Local-first reporting</h2>
+
+      <p>
+        Sequencing results remain on the user's computer or analysis system.
+        WINGS includes a local report server for navigating run-level and
+        sample-level reports without publishing sequencing data to this site.
+      </p>
+
+      <p>
+        After generating the reports, launch the local viewer from the
+        repository root with:
+      </p>
+
+      <p>
+        <code>./view_reports.sh</code>
+      </p>
+    </section>
+
+    <section>
+      <h2>Pandemic ESCAPE Center</h2>
+
+      <p>
+        WINGS was developed in support of the Pandemic ESCAPE Center and its
+        efforts in pathogen surveillance, sequencing, bioinformatics, and
+        understanding the emergence and spread of infectious disease threats.
+      </p>
+
+      <div class="buttons">
+        <a
+          class="button button-secondary"
+          href="https://escape.engr.uky.edu/"
+        >
+          Visit the ESCAPE Center
+        </a>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<footer>
+  <div class="container">
+    <strong>WINGS</strong> — Wild-bird Influenza Genomics and Surveillance
+    <br>
+    <a href="https://github.com/ZooPhy/avian-influenza-nanopore">
+      ZooPhy / avian-influenza-nanopore
+    </a>
+  </div>
+</footer>
+
+</body>
+</html>
