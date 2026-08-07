@@ -27,6 +27,8 @@ Most tools run in rule-specific Conda environments. IRMA runs in a container sel
 - VADR sequence annotation and validation
 - Interactive sample-level HTML reports
 - Interactive sequencing-run summary report
+- Portable `.wings` report bundles containing the run summary and all sample reports
+- Browser-based local report viewing at `wings.scotchlab.org` with no sequencing-data upload
 - Apple Silicon and Linux ARM64 support
 - Docker, Apptainer, Singularity, or local IRMA execution
 
@@ -74,6 +76,7 @@ VADR annotation and validation
 Interactive HTML reports
     +--> Sample report
     +--> Run summary report
+    +--> Portable WINGS report bundle (.wings)
 ```
 
 NanoPlot is also available as an optional raw-read quality-control target.
@@ -99,6 +102,7 @@ NanoPlot is also available as an optional raw-read quality-control target.
 │   └── seqtk.yaml
 ├── scripts/
 │   ├── build_blast_db.sh
+│   ├── build_report_bundle.py
 │   ├── check_coverage.py
 │   ├── coverage_table.py
 │   ├── normalize_irma_outputs.py
@@ -112,6 +116,8 @@ NanoPlot is also available as an optional raw-read quality-control target.
 │       └── sample-report.css
 ├── profiles/
 │   └── slurm-arm/
+├── demo/
+│   └── wings_demo.wings              # public demonstration bundle for the website
 ├── data/                             # input FASTQ files; not committed
 ├── resources/
 │   ├── fluA_reference.fasta.zip      # downloaded resource; not committed
@@ -574,11 +580,19 @@ The sequencing-run report is written to:
 results/run_summary/run_summary.html
 ```
 
+A portable WINGS report bundle containing the run summary and all sample reports is written to:
+
+```text
+results/wings_report_bundle.wings
+```
+
+The `.wings` bundle is a self-contained JSON report package intended for browser-based viewing. It contains rendered HTML reports, not the raw sequencing reads or intermediate analysis files.
+
 ## Reports
 
 ### Sample report
 
-Each sample report summarizes read filtering, segment recovery, coverage, BLAST assignments, H5N1 screening, GenoFLU results, VADR status, and review flags. Reports are generated as self-contained HTML. For reliable navigation between the run summary and individual sample reports, use the included local report server.
+Each sample report summarizes read filtering, segment recovery, coverage, BLAST assignments, H5N1 screening, GenoFLU results, VADR status, and review flags. Reports are generated as self-contained HTML and are also packaged into the portable `.wings` bundle for browser-based navigation.
 
 Build one sample report with:
 
@@ -608,11 +622,35 @@ snakemake \
 
 Because the run summary depends on all sample reports, target an individual sample report when rerunning only one barcode.
 
+### Build the portable WINGS report bundle
+
+Build the portable report bundle with:
+
+```bash
+snakemake results/wings_report_bundle.wings \
+  --configfile config.yaml \
+  --sdm conda \
+  --cores 4 \
+  --resources mem_mb=90000 kaleido=1
+```
+
+The resulting `results/wings_report_bundle.wings` file contains the rendered run summary and all rendered sample reports in a single portable package. It can be opened at `wings.scotchlab.org` by selecting or dragging the `.wings` file into the report viewer. The browser reads the bundle locally; the sequencing results are not uploaded to the WINGS website.
+
+For a public demonstration, a deliberately selected example bundle can be placed at:
+
+```text
+demo/wings_demo.wings
+```
+
+Only use non-sensitive data that are appropriate for public distribution in the demo bundle.
+
 ### View reports locally
 
-The run summary links to the individual sample HTML reports. Some browsers, including Safari, restrict navigation between local `file://` HTML documents. To preserve working links between the run summary and sample reports, serve the `results/` directory through the included local report server.
+The preferred way to review a completed analysis is to open `results/wings_report_bundle.wings` at `wings.scotchlab.org`. The site can display the run summary and navigate to individual sample reports directly from the local bundle without uploading the report contents.
 
-The simplest way to launch the reports from the repository root is:
+The included local report server remains available as an alternative for development, offline use, or direct browsing of the generated HTML files. Some browsers, including Safari, restrict navigation between local `file://` HTML documents, so use the local server rather than opening the HTML files directly.
+
+Launch the local report server from the repository root with:
 
 ```bash
 ./view_reports.sh
@@ -624,7 +662,7 @@ The wrapper starts `scripts/serve_reports.py`, which by default binds only to th
 http://127.0.0.1:4174/run_summary/run_summary.html
 ```
 
-The report server serves the existing static HTML reports from the local `results/` directory. It does not upload sequencing data or expose the reports to the network.
+The report server serves the existing static HTML reports from the local `results/` directory. By default it binds only to the loopback interface, so it does not upload sequencing data or publish the reports to the network.
 
 Press `Ctrl+C` to stop the server.
 
@@ -818,6 +856,7 @@ Rerun the environment creation or complete workflow command.
 - Rule-specific Conda environments are stored under `.snakemake/conda/`.
 - IRMA runs in Docker on macOS and in Apptainer or Singularity on the ARM64 cluster.
 - The BLAST reference archive, generated database, input reads, results, local configuration, and Snakemake working files should not be committed to Git.
+- `results/wings_report_bundle.wings` is generated from local reports and should be treated as analysis output; do not publish it unless its contents are appropriate for public release.
 - Container tags and package versions should be pinned for a formal release after the validated versions are finalized.
 
 Recommended `.gitignore` entries:
