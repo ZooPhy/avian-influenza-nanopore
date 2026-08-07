@@ -132,6 +132,32 @@
       border-radius: 4px;
     }
 
+    .hero-wrap {
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .hero-logo {
+      width: min(260px, 34vw);
+      max-width: 260px;
+      border-radius: 16px;
+      background: var(--white);
+      padding: 0.5rem;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    }
+
+    .hero-copy {
+      flex: 1 1 460px;
+    }
+
+    @media (max-width: 700px) {
+      .hero-logo {
+        width: 180px;
+      }
+    }
+
     footer {
       background: var(--black);
       color: var(--white);
@@ -148,12 +174,22 @@
 
 <header>
   <div class="container">
-    <div class="eyebrow">Avian Influenza Genomic Surveillance</div>
+    <div class="hero-wrap">
+      <img
+        class="hero-logo"
+        src="wings_logo.jpg"
+        alt="WINGS logo: stylized wild bird with a DNA helix"
+      >
 
-    <h1>WINGS</h1>
+      <div class="hero-copy">
+        <div class="eyebrow">Avian Influenza Genomic Surveillance</div>
 
-    <div class="subtitle">
-      Wild-bird Influenza Genomics and Surveillance
+        <h1>WINGS</h1>
+
+        <div class="subtitle">
+          Wild-bird Influenza Genomics and Surveillance
+        </div>
+      </div>
     </div>
   </div>
 </header>
