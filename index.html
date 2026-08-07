@@ -158,6 +158,29 @@
       }
     }
 
+
+    .local-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.65rem;
+      padding: 0.65rem 1.15rem;
+      border: 1.5px solid rgba(140, 29, 64, 0.35);
+      border-radius: 999px;
+      background: rgba(140, 29, 64, 0.08);
+      color: var(--maroon);
+      font-weight: 700;
+      font-size: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .local-dot {
+      width: 0.75rem;
+      height: 0.75rem;
+      border-radius: 50%;
+      background: var(--gold);
+      flex: 0 0 auto;
+    }
+
     footer {
       background: var(--black);
       color: var(--white);
@@ -282,6 +305,11 @@
     </section>
 
     <section>
+      <div class="local-badge" aria-label="Local analysis">
+        <span class="local-dot" aria-hidden="true"></span>
+        Local analysis
+      </div>
+
       <h2>Local-first reporting</h2>
 
       <p>
