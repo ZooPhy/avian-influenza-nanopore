@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>WINGS Results</title>
+  <style>
+    :root {
+      --maroon: #8C1D40;
+      --gold: #FFC627;
+      --black: #191919;
+      --gray: #5c6670;
+      --light-gray: #f5f5f5;
+      --white: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      color: var(--black);
+      background: var(--light-gray);
+      line-height: 1.5;
+    }
+    .shell {
+      width: min(980px, calc(100% - 2rem));
+      margin: 3rem auto;
+    }
+    .header {
+      background: var(--maroon);
+      color: var(--white);
+      border-radius: 14px;
+      padding: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      box-shadow: 0 12px 30px rgba(0,0,0,.12);
+    }
+    .header img {
+      width: 92px;
+      height: 92px;
+      object-fit: contain;
+      background: var(--white);
+      border-radius: 10px;
+      padding: .25rem;
+    }
+    .eyebrow {
+      color: var(--gold);
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      font-size: .85rem;
+    }
+    h1 { margin: .15rem 0 0; font-size: clamp(2rem, 5vw, 3.4rem); }
+    .subtitle { font-size: 1.1rem; opacity: .96; }
+    .panel {
+      margin-top: 1.5rem;
+      background: var(--white);
+      border-top: 4px solid var(--gold);
+      border-radius: 12px;
+      padding: 1.75rem;
+      box-shadow: 0 10px 28px rgba(0,0,0,.08);
+    }
+    .panel h2 { margin-top: 0; }
+    .drop-zone {
+      border: 2px dashed rgba(140,29,64,.45);
+      border-radius: 10px;
+      padding: 2rem 1.25rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .15s ease, background .15s ease;
+    }
+    .drop-zone.is-dragover {
+      border-color: var(--maroon);
+      background: #fff8df;
+    }
+    .drop-zone strong {
+      display: block;
+      color: var(--maroon);
+      font-size: 1.15rem;
+      margin-bottom: .4rem;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .75rem;
+      margin-top: 1rem;
+    }
+    .button {
+      display: inline-block;
+      padding: .8rem 1.1rem;
+      border: 2px solid var(--maroon);
+      border-radius: 6px;
+      background: var(--white);
+      color: var(--maroon);
+      text-decoration: none;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    .button-primary { background: var(--maroon); color: var(--white); }
+    .note { color: var(--gray); }
+    .status { margin-top: 1rem; color: var(--gray); min-height: 1.5em; }
+    code { background: #eee; padding: .1rem .3rem; border-radius: 4px; }
+    @media (max-width: 620px) {
+      .shell { margin: 1rem auto; }
+      .header { align-items: flex-start; }
+      .header img { width: 72px; height: 72px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- WINGS_WEB_BUILD 2026-08-09-separate-results-v2 -->
+  <main class="shell">
+    <div class="header">
+      <img src="wings_logo.jpg" alt="WINGS logo">
+      <div>
+        <div class="eyebrow">Avian Influenza Genomic Surveillance</div>
+        <h1>WINGS Results</h1>
+        <div class="subtitle">Open a portable WINGS report bundle in this dedicated results tab.</div>
+      </div>
+    </div>
+
+    <section class="panel">
+      <h2>Open a WINGS report bundle</h2>
+      <p>
+        Select or drop a <code>.wings</code> file. The bundle is read locally by your browser and is not uploaded.
+      </p>
+
+      <div class="drop-zone" id="drop-zone" tabindex="0" role="button" aria-controls="file-input">
+        <strong>Drop a WINGS report bundle here</strong>
+        <span>or click to choose a <code>.wings</code> file</span>
+      </div>
+
+      <div class="actions">
+        <button class="button button-primary" type="button" id="choose-file">Choose .wings file</button>
+        <button class="button" type="button" id="open-demo">Explore demo data</button>
+        <a class="button" href="./">Back to WINGS home</a>
+      </div>
+
+      <div class="status" id="status" aria-live="polite"></div>
+      <p class="note">Once loaded, the run summary becomes the full page. Sample links open in this same results tab, and Quarto navigation works natively.</p>
+    </section>
+  </main>
+
+  <input id="file-input" type="file" accept=".wings,application/json" hidden>
+
+  <script>
+    const fileInput = document.getElementById("file-input");
+    const chooseFile = document.getElementById("choose-file");
+    const openDemo = document.getElementById("open-demo");
+    const dropZone = document.getElementById("drop-zone");
+    const status = document.getElementById("status");
+
+    function normalizeSampleKey(value) {
+      return String(value || "")
+        .replace(/[?#].*$/, "")
+        .replace(/\.sample_summary\.html$/i, "")
+        .replace(/^.*\//, "");
+    }
+
+    function getRunSummaryHtml(bundle) {
+      if (!bundle || !bundle.run_summary) return null;
+      if (typeof bundle.run_summary === "string") return bundle.run_summary;
+      if (typeof bundle.run_summary === "object" && typeof bundle.run_summary.html === "string") {
+        return bundle.run_summary.html;
+      }
+      return null;
+    }
+
+    function validateBundle(bundle) {
+      if (!bundle || typeof bundle !== "object") throw new Error("The selected file is not a valid WINGS bundle.");
+      if (bundle.format !== "WINGS_REPORT_BUNDLE") throw new Error("This file is not a WINGS report bundle.");
+      if (!getRunSummaryHtml(bundle)) throw new Error("The bundle does not contain a run summary.");
+      if (!bundle.samples || typeof bundle.samples !== "object") throw new Error("The bundle does not contain sample reports.");
+      return bundle;
+    }
+
+    function getSampleEntries(bundle) {
+      const entries = new Map();
+      for (const [key, value] of Object.entries(bundle.samples || {})) {
+        const html = typeof value === "string" ? value : value && value.html;
+        const filename = value && typeof value === "object" ? value.filename : "";
+        if (!html) continue;
+        const normalized = normalizeSampleKey(filename || key);
+        entries.set(normalized, { key, filename, html });
+      }
+      return entries;
+    }
+
+    function makeBlobUrl(html) {
+      return URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    }
+
+    function addToolbar(html, label, showBack) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, "text/html");
+
+      const toolbar = doc.createElement("div");
+      toolbar.id = "wings-results-toolbar";
+      toolbar.style.cssText = [
+        "position:sticky",
+        "top:0",
+        "z-index:2147483647",
+        "display:flex",
+        "align-items:center",
+        "justify-content:space-between",
+        "gap:.75rem",
+        "padding:.7rem 1rem",
+        "background:rgba(255,255,255,.97)",
+        "border-bottom:1px solid #ddd",
+        "backdrop-filter:blur(8px)",
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif"
+      ].join(";");
+
+      const title = doc.createElement("div");
+      title.textContent = label;
+      title.style.cssText = "color:#5c6670;font-size:.95rem;overflow-wrap:anywhere";
+      toolbar.appendChild(title);
+
+      const actions = doc.createElement("div");
+      actions.style.cssText = "display:flex;gap:.65rem;flex-wrap:wrap;justify-content:flex-end";
+
+      function button(text, onclick) {
+        const b = doc.createElement("button");
+        b.type = "button";
+        b.textContent = text;
+        b.setAttribute("onclick", onclick);
+        b.style.cssText = "padding:.6rem .9rem;border:2px solid #8C1D40;border-radius:6px;background:#fff;color:#8C1D40;font-weight:700;cursor:pointer;white-space:nowrap";
+        return b;
+      }
+
+      if (showBack) actions.appendChild(button("Back to run summary", "history.back()"));
+      actions.appendChild(button("Close results", "window.close()"));
+      toolbar.appendChild(actions);
+      doc.body.insertBefore(toolbar, doc.body.firstChild);
+
+      return "<!doctype html>\n" + doc.documentElement.outerHTML;
+    }
+
+    function rewriteSampleLinks(html, sampleUrls) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, "text/html");
+
+      for (const link of doc.querySelectorAll("a[href]")) {
+        const href = link.getAttribute("href") || "";
+        if (!/sample_summary\.html(?:[?#].*)?$/i.test(href)) continue;
+        const url = sampleUrls.get(normalizeSampleKey(href));
+        if (!url) continue;
+        link.setAttribute("href", url);
+        link.removeAttribute("target");
+      }
+
+      return "<!doctype html>\n" + doc.documentElement.outerHTML;
+    }
+
+    function openBundle(bundle, label) {
+      validateBundle(bundle);
+      status.textContent = "Preparing reports...";
+
+      const sampleUrls = new Map();
+      for (const [key, entry] of getSampleEntries(bundle).entries()) {
+        const sampleLabel = key || entry.key || "WINGS sample";
+        const samplePage = addToolbar(entry.html, sampleLabel, true);
+        sampleUrls.set(key, makeBlobUrl(samplePage));
+      }
+
+      const rewrittenRun = rewriteSampleLinks(getRunSummaryHtml(bundle), sampleUrls);
+      const runPage = addToolbar(rewrittenRun, label, false);
+      const runUrl = makeBlobUrl(runPage);
+
+      window.location.assign(runUrl);
+    }
+
+    async function loadFile(file) {
+      status.textContent = `Reading ${file.name}...`;
+      const text = await file.text();
+      const bundle = JSON.parse(text);
+      const label = `${file.name} · ${Object.keys(bundle.samples || {}).length} sample reports`;
+      openBundle(bundle, label);
+    }
+
+    async function loadDemo() {
+      status.textContent = "Loading demo data...";
+      const response = await fetch("demo/wings_demo.wings", { cache: "no-store" });
+      if (!response.ok) throw new Error("Demo bundle is not available yet.");
+      const bundle = await response.json();
+      const label = `Demo WINGS run · ${Object.keys(bundle.samples || {}).length} sample reports`;
+      openBundle(bundle, label);
+    }
+
+    chooseFile.addEventListener("click", () => fileInput.click());
+    dropZone.addEventListener("click", () => fileInput.click());
+    dropZone.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        fileInput.click();
+      }
+    });
+
+    fileInput.addEventListener("change", async () => {
+      if (!fileInput.files.length) return;
+      try {
+        await loadFile(fileInput.files[0]);
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        fileInput.value = "";
+      }
+    });
+
+    ["dragenter", "dragover"].forEach((name) => {
+      dropZone.addEventListener(name, (event) => {
+        event.preventDefault();
+        dropZone.classList.add("is-dragover");
+      });
+    });
+
+    ["dragleave", "drop"].forEach((name) => {
+      dropZone.addEventListener(name, (event) => {
+        event.preventDefault();
+        dropZone.classList.remove("is-dragover");
+      });
+    });
+
+    dropZone.addEventListener("drop", async (event) => {
+      const file = event.dataTransfer.files && event.dataTransfer.files[0];
+      if (!file) return;
+      try {
+        await loadFile(file);
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    });
+
+    openDemo.addEventListener("click", async () => {
+      try {
+        await loadDemo();
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    });
+
+    if (new URLSearchParams(window.location.search).get("demo") === "1") {
+      loadDemo().catch((error) => { status.textContent = error.message; });
+    }
+  </script>
+</body>
+</html>
