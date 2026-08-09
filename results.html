@@ -16,7 +16,9 @@
       --light-gray: #f5f5f5;
       --white: #ffffff;
     }
+
     * { box-sizing: border-box; }
+
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
@@ -24,10 +26,12 @@
       background: var(--light-gray);
       line-height: 1.5;
     }
+
     .shell {
-      width: min(980px, calc(100% - 2rem));
+      width: min(1180px, calc(100% - 2rem));
       margin: 3rem auto;
     }
+
     .header {
       background: var(--maroon);
       color: var(--white);
@@ -38,6 +42,7 @@
       gap: 1.25rem;
       box-shadow: 0 12px 30px rgba(0,0,0,.12);
     }
+
     .header img {
       width: 92px;
       height: 92px;
@@ -46,6 +51,7 @@
       border-radius: 10px;
       padding: .25rem;
     }
+
     .eyebrow {
       color: var(--gold);
       font-weight: 800;
@@ -53,8 +59,17 @@
       letter-spacing: .06em;
       font-size: .85rem;
     }
-    h1 { margin: .15rem 0 0; font-size: clamp(2rem, 5vw, 3.4rem); }
-    .subtitle { font-size: 1.1rem; opacity: .96; }
+
+    h1 {
+      margin: .15rem 0 0;
+      font-size: clamp(2rem, 5vw, 3.4rem);
+    }
+
+    .subtitle {
+      font-size: 1.1rem;
+      opacity: .96;
+    }
+
     .panel {
       margin-top: 1.5rem;
       background: var(--white);
@@ -63,7 +78,9 @@
       padding: 1.75rem;
       box-shadow: 0 10px 28px rgba(0,0,0,.08);
     }
+
     .panel h2 { margin-top: 0; }
+
     .drop-zone {
       border: 2px dashed rgba(140,29,64,.45);
       border-radius: 10px;
@@ -72,22 +89,26 @@
       cursor: pointer;
       transition: border-color .15s ease, background .15s ease;
     }
+
     .drop-zone.is-dragover {
       border-color: var(--maroon);
       background: #fff8df;
     }
+
     .drop-zone strong {
       display: block;
       color: var(--maroon);
       font-size: 1.15rem;
       margin-bottom: .4rem;
     }
+
     .actions {
       display: flex;
       flex-wrap: wrap;
       gap: .75rem;
       margin-top: 1rem;
     }
+
     .button {
       display: inline-block;
       padding: .8rem 1.1rem;
@@ -99,20 +120,76 @@
       font-weight: 750;
       cursor: pointer;
     }
-    .button-primary { background: var(--maroon); color: var(--white); }
+
+    .button-primary {
+      background: var(--maroon);
+      color: var(--white);
+    }
+
     .note { color: var(--gray); }
     .status { margin-top: 1rem; color: var(--gray); min-height: 1.5em; }
     code { background: #eee; padding: .1rem .3rem; border-radius: 4px; }
+
+    #report-viewer {
+      display: none;
+      min-height: 100vh;
+      background: var(--light-gray);
+    }
+
+    #report-viewer.is-open {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .report-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: .75rem;
+      padding: .75rem 1rem;
+      background: rgba(255,255,255,.97);
+      border-bottom: 1px solid #ddd;
+      backdrop-filter: blur(8px);
+    }
+
+    .report-status {
+      color: var(--gray);
+      font-size: .95rem;
+      overflow-wrap: anywhere;
+    }
+
+    .report-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: .65rem;
+    }
+
+    .report-frame {
+      display: block;
+      width: 100%;
+      height: calc(100vh - 72px);
+      min-height: 640px;
+      border: 0;
+      background: var(--white);
+    }
+
     @media (max-width: 620px) {
       .shell { margin: 1rem auto; }
       .header { align-items: flex-start; }
       .header img { width: 72px; height: 72px; }
+      .report-toolbar { align-items: flex-start; }
+      .report-frame { height: calc(100vh - 118px); }
     }
   </style>
 </head>
 <body>
-  <!-- WINGS_WEB_BUILD 2026-08-09-separate-results-v2 -->
-  <main class="shell">
+  <!-- WINGS_WEB_BUILD 2026-08-09-separate-results-v3-no-blob-navigation -->
+
+  <main class="shell" id="bundle-launcher">
     <div class="header">
       <img src="wings_logo.jpg" alt="WINGS logo">
       <div>
@@ -140,9 +217,21 @@
       </div>
 
       <div class="status" id="status" aria-live="polite"></div>
-      <p class="note">Once loaded, the run summary becomes the full page. Sample links open in this same results tab, and Quarto navigation works natively.</p>
+      <p class="note">Once loaded, the report is displayed in this dedicated results tab. The bundle remains in browser memory so sample navigation does not rely on temporary blob links.</p>
     </section>
   </main>
+
+  <section id="report-viewer" aria-label="WINGS report viewer">
+    <div class="report-toolbar">
+      <div class="report-status" id="report-status">WINGS results</div>
+      <div class="report-actions">
+        <button class="button" type="button" id="back-to-run" hidden>Back to run summary</button>
+        <button class="button" type="button" id="open-another">Open another .wings file</button>
+        <button class="button" type="button" id="close-results">Close results</button>
+      </div>
+    </div>
+    <iframe class="report-frame" id="report-frame" title="WINGS report"></iframe>
+  </section>
 
   <input id="file-input" type="file" accept=".wings,application/json" hidden>
 
@@ -152,6 +241,16 @@
     const openDemo = document.getElementById("open-demo");
     const dropZone = document.getElementById("drop-zone");
     const status = document.getElementById("status");
+    const bundleLauncher = document.getElementById("bundle-launcher");
+    const reportViewer = document.getElementById("report-viewer");
+    const reportFrame = document.getElementById("report-frame");
+    const reportStatus = document.getElementById("report-status");
+    const backToRun = document.getElementById("back-to-run");
+    const openAnother = document.getElementById("open-another");
+    const closeResults = document.getElementById("close-results");
+
+    let currentBundle = null;
+    let currentRunLabel = "WINGS run summary";
 
     function normalizeSampleKey(value) {
       return String(value || "")
@@ -169,6 +268,27 @@
       return null;
     }
 
+    function getSampleHtml(bundle, sampleId) {
+      if (!bundle || !bundle.samples) return null;
+
+      const direct = bundle.samples[sampleId];
+      if (typeof direct === "string") return direct;
+      if (direct && typeof direct === "object" && typeof direct.html === "string") return direct.html;
+
+      const normalized = normalizeSampleKey(sampleId);
+      for (const [key, value] of Object.entries(bundle.samples)) {
+        const filename = value && typeof value === "object" ? value.filename : "";
+        const keyMatches = normalizeSampleKey(key) === normalized;
+        const filenameMatches = filename && normalizeSampleKey(filename) === normalized;
+
+        if (keyMatches || filenameMatches) {
+          if (typeof value === "string") return value;
+          if (value && typeof value === "object" && typeof value.html === "string") return value.html;
+        }
+      }
+      return null;
+    }
+
     function validateBundle(bundle) {
       if (!bundle || typeof bundle !== "object") throw new Error("The selected file is not a valid WINGS bundle.");
       if (bundle.format !== "WINGS_REPORT_BUNDLE") throw new Error("This file is not a WINGS report bundle.");
@@ -177,100 +297,65 @@
       return bundle;
     }
 
-    function getSampleEntries(bundle) {
-      const entries = new Map();
-      for (const [key, value] of Object.entries(bundle.samples || {})) {
-        const html = typeof value === "string" ? value : value && value.html;
-        const filename = value && typeof value === "object" ? value.filename : "";
-        if (!html) continue;
-        const normalized = normalizeSampleKey(filename || key);
-        entries.set(normalized, { key, filename, html });
-      }
-      return entries;
+    function renderReport(html, label, viewType) {
+      if (!html) throw new Error(`No HTML was found for ${label}.`);
+
+      bundleLauncher.style.display = "none";
+      reportViewer.classList.add("is-open");
+      reportStatus.textContent = label;
+      backToRun.hidden = viewType !== "sample";
+      reportFrame.srcdoc = html;
+      window.scrollTo(0, 0);
     }
 
-    function makeBlobUrl(html) {
-      return URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    function renderRunSummary() {
+      if (!currentBundle) return;
+      renderReport(getRunSummaryHtml(currentBundle), currentRunLabel, "run");
     }
 
-    function addToolbar(html, label, showBack) {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, "text/html");
+    function attachReportNavigation() {
+      const doc = reportFrame.contentDocument;
+      if (!doc || !currentBundle) return;
 
-      const toolbar = doc.createElement("div");
-      toolbar.id = "wings-results-toolbar";
-      toolbar.style.cssText = [
-        "position:sticky",
-        "top:0",
-        "z-index:2147483647",
-        "display:flex",
-        "align-items:center",
-        "justify-content:space-between",
-        "gap:.75rem",
-        "padding:.7rem 1rem",
-        "background:rgba(255,255,255,.97)",
-        "border-bottom:1px solid #ddd",
-        "backdrop-filter:blur(8px)",
-        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif"
-      ].join(";");
+      doc.addEventListener("click", (event) => {
+        const target = event.target;
+        const link = target && typeof target.closest === "function" ? target.closest("a") : null;
+        if (!link) return;
 
-      const title = doc.createElement("div");
-      title.textContent = label;
-      title.style.cssText = "color:#5c6670;font-size:.95rem;overflow-wrap:anywhere";
-      toolbar.appendChild(title);
+        const rawHref = link.getAttribute("href") || "";
 
-      const actions = doc.createElement("div");
-      actions.style.cssText = "display:flex;gap:.65rem;flex-wrap:wrap;justify-content:flex-end";
+        if (rawHref.startsWith("#")) {
+          event.preventDefault();
+          event.stopPropagation();
 
-      function button(text, onclick) {
-        const b = doc.createElement("button");
-        b.type = "button";
-        b.textContent = text;
-        b.setAttribute("onclick", onclick);
-        b.style.cssText = "padding:.6rem .9rem;border:2px solid #8C1D40;border-radius:6px;background:#fff;color:#8C1D40;font-weight:700;cursor:pointer;white-space:nowrap";
-        return b;
-      }
+          const id = decodeURIComponent(rawHref.slice(1));
+          if (!id) return;
 
-      if (showBack) actions.appendChild(button("Back to run summary", "history.back()"));
-      actions.appendChild(button("Close results", "window.close()"));
-      toolbar.appendChild(actions);
-      doc.body.insertBefore(toolbar, doc.body.firstChild);
+          const section = doc.getElementById(id) || doc.querySelector(`[name="${CSS.escape(id)}"]`);
+          if (section) section.scrollIntoView({ behavior: "smooth", block: "start" });
+          return;
+        }
 
-      return "<!doctype html>\n" + doc.documentElement.outerHTML;
+        if (!/sample_summary\.html(?:[?#].*)?$/i.test(rawHref)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        const sampleHtml = getSampleHtml(currentBundle, rawHref);
+        if (!sampleHtml) {
+          window.alert("The selected sample report was not found in this WINGS bundle.");
+          return;
+        }
+
+        renderReport(sampleHtml, normalizeSampleKey(rawHref), "sample");
+      }, true);
     }
 
-    function rewriteSampleLinks(html, sampleUrls) {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, "text/html");
-
-      for (const link of doc.querySelectorAll("a[href]")) {
-        const href = link.getAttribute("href") || "";
-        if (!/sample_summary\.html(?:[?#].*)?$/i.test(href)) continue;
-        const url = sampleUrls.get(normalizeSampleKey(href));
-        if (!url) continue;
-        link.setAttribute("href", url);
-        link.removeAttribute("target");
-      }
-
-      return "<!doctype html>\n" + doc.documentElement.outerHTML;
-    }
-
-    function openBundle(bundle, label) {
-      validateBundle(bundle);
-      status.textContent = "Preparing reports...";
-
-      const sampleUrls = new Map();
-      for (const [key, entry] of getSampleEntries(bundle).entries()) {
-        const sampleLabel = key || entry.key || "WINGS sample";
-        const samplePage = addToolbar(entry.html, sampleLabel, true);
-        sampleUrls.set(key, makeBlobUrl(samplePage));
-      }
-
-      const rewrittenRun = rewriteSampleLinks(getRunSummaryHtml(bundle), sampleUrls);
-      const runPage = addToolbar(rewrittenRun, label, false);
-      const runUrl = makeBlobUrl(runPage);
-
-      window.location.assign(runUrl);
+    async function openBundle(bundle, label) {
+      currentBundle = validateBundle(bundle);
+      currentRunLabel = label || "WINGS run summary";
+      renderRunSummary();
     }
 
     async function loadFile(file) {
@@ -278,7 +363,7 @@
       const text = await file.text();
       const bundle = JSON.parse(text);
       const label = `${file.name} · ${Object.keys(bundle.samples || {}).length} sample reports`;
-      openBundle(bundle, label);
+      await openBundle(bundle, label);
     }
 
     async function loadDemo() {
@@ -287,8 +372,26 @@
       if (!response.ok) throw new Error("Demo bundle is not available yet.");
       const bundle = await response.json();
       const label = `Demo WINGS run · ${Object.keys(bundle.samples || {}).length} sample reports`;
-      openBundle(bundle, label);
+      await openBundle(bundle, label);
     }
+
+    reportFrame.addEventListener("load", attachReportNavigation);
+
+    backToRun.addEventListener("click", renderRunSummary);
+
+    openAnother.addEventListener("click", () => {
+      currentBundle = null;
+      currentRunLabel = "WINGS run summary";
+      reportFrame.removeAttribute("srcdoc");
+      reportViewer.classList.remove("is-open");
+      bundleLauncher.style.display = "block";
+      status.textContent = "";
+      window.scrollTo(0, 0);
+    });
+
+    closeResults.addEventListener("click", () => {
+      window.close();
+    });
 
     chooseFile.addEventListener("click", () => fileInput.click());
     dropZone.addEventListener("click", () => fileInput.click());
