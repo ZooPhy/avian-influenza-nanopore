@@ -45,3 +45,4 @@ resources/flu_db/
 # Local development backups and refactor workspace
 Snakefile.pre-irma-refactor
 avian_influenza_irma_refactor/
+tmp/
