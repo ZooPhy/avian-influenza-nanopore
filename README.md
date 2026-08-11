@@ -17,7 +17,8 @@ Most tools run in rule-specific Conda environments. IRMA runs in a container sel
 
 - Oxford Nanopore influenza A analysis
 - Porechop ABI adapter trimming
-- `fastplong` read-quality and length filtering
+- `fastplong` read-quality and length filtering without a second adapter-trimming pass
+- Sample metadata validation and integration
 - IRMA `FLU-minion` assembly
 - Segment-level coverage assessment
 - Medaka consensus polishing and variant calling
@@ -43,7 +44,7 @@ Porechop ABI
     |
     v
 fastplong
-(long-read quality and length filtering)
+(long-read quality and length filtering; adapter trimming disabled)
     |
     v
 seqtk rename
@@ -74,6 +75,7 @@ VADR annotation and validation
     |
     v
 Interactive HTML reports
+    +--> Validated sample metadata
     +--> Sample report
     +--> Run summary report
     +--> Portable WINGS report bundle (.wings)
@@ -106,6 +108,8 @@ NanoPlot is also available as an optional raw-read quality-control target.
 │   ├── check_coverage.py
 │   ├── coverage_table.py
 │   ├── normalize_irma_outputs.py
+│   ├── validate_metadata.py
+│   ├── extract_sample_metadata.py
 │   ├── serve_reports.py
 │   ├── summarize_blast.py
 │   ├── sample_summary.qmd
@@ -119,6 +123,7 @@ NanoPlot is also available as an optional raw-read quality-control target.
 ├── demo/
 │   └── wings_demo.wings              # public demonstration bundle for the website
 ├── data/                             # input FASTQ files; not committed
+├── metadata.tsv                      # sample metadata table
 ├── resources/
 │   ├── fluA_reference.fasta.zip      # downloaded resource; not committed
 │   └── flu_db/                       # generated BLAST database; not committed
@@ -360,6 +365,44 @@ The default pattern is:
 
 The text matched by `{sample}` becomes the sample identifier used in output paths.
 
+### Sample metadata
+
+WINGS supports a tab-delimited `metadata.tsv` file that is validated against the detected FASTQ samples before sample-level reporting. Metadata are matched to sequencing inputs by `sample_id`. By default, every detected FASTQ sample must have exactly one corresponding metadata record.
+
+The supported schema is:
+
+| Field | Requirement | Description |
+|---|---|---|
+| `sample_id` | Required | Must exactly match the `{sample}` identifier derived from the FASTQ filename |
+| `host` | Required | Host species or host code; use `environmental` when there is no animal host |
+| `collection_date` | Required | Collection date in ISO `YYYY-MM-DD` format |
+| `country` | Required | Country of collection |
+| `specimen_type` | Optional | Specimen or swab type |
+| `state` | Optional | State, province, or equivalent first-level administrative area |
+| `latitude` | Optional | Decimal latitude from -90 to 90 |
+| `longitude` | Optional | Decimal longitude from -180 to 180 |
+
+Example:
+
+```tsv
+sample_id	host	specimen_type	collection_date	state	country	latitude	longitude
+12-11-2025_barcode03	BLVU	Dry (Oral+Cloacal)	2025-10-20	Kentucky	USA		
+21-07-2026_barcode13	RTHA	Dry (Oral+Cloacal)	2026-04-08	Kentucky	USA	38.069739	-84.746138
+```
+
+Host values are preserved as supplied; WINGS does not silently expand or normalize species codes. Latitude and longitude may both be blank, but when supplied they must be valid numeric coordinates.
+
+Metadata validation checks required columns and fields, unique `sample_id` values, ISO-formatted collection dates, coordinate ranges, and agreement between metadata records and detected FASTQ samples. The normalized table is written to `results/metadata/validated_metadata.tsv`, and each sample receives a sample-specific metadata table under `results/<sample>/metadata/`.
+
+Configure metadata with:
+
+```yaml
+metadata_file: "metadata.tsv"
+metadata_require_all_samples: true
+```
+
+Set `metadata_require_all_samples: false` only when intentionally allowing FASTQ samples without metadata.
+
 ## Configuration
 
 ### Apple Silicon laptop example
@@ -377,6 +420,10 @@ porechop_time_min: 240
 
 fastplong_mean_quality: 10
 fastplong_min_length: 500
+fastplong_threads: 4
+
+metadata_file: "metadata.tsv"
+metadata_require_all_samples: true
 
 irma_image: "docker://ghcr.io/cdcgov/irma:latest"
 irma_module: "FLU-minion"
@@ -405,6 +452,10 @@ porechop_time_min: 720
 
 fastplong_mean_quality: 10
 fastplong_min_length: 500
+fastplong_threads: 4
+
+metadata_file: "metadata.tsv"
+metadata_require_all_samples: true
 
 irma_image: "docker://ghcr.io/cdcgov/irma:latest"
 irma_module: "FLU-minion"
@@ -538,6 +589,7 @@ results/<sample>/
 ├── nanoplot/                    # optional
 ├── porechop/
 ├── fastplong/
+├── metadata/
 ├── irma/
 │   ├── project/
 │   ├── segments/
@@ -558,6 +610,7 @@ Important sample outputs include:
 
 ```text
 results/<sample>/fastplong/report.html
+results/<sample>/metadata/<sample>.metadata.tsv
 results/<sample>/irma/manifest.tsv
 results/<sample>/irma/segments/<segment>/consensus.fasta
 results/<sample>/coverage/coverage.tsv
@@ -572,6 +625,13 @@ results/<sample>/genoflu/GenoFLU.tsv
 results/<sample>/vadr/<sample>.vadr.log
 results/<sample>/summary/<sample>.sample_summary.tsv
 results/<sample>/summary/<sample>.sample_summary.html
+```
+
+Validated run-level metadata outputs include:
+
+```text
+results/metadata/validated_metadata.tsv
+results/metadata/metadata_validation.tsv
 ```
 
 The sequencing-run report is written to:
@@ -592,7 +652,7 @@ The `.wings` bundle is a self-contained JSON report package intended for browser
 
 ### Sample report
 
-Each sample report summarizes read filtering, segment recovery, coverage, BLAST assignments, H5N1 screening, GenoFLU results, VADR status, and review flags. Reports are generated as self-contained HTML and are also packaged into the portable `.wings` bundle for browser-based navigation.
+Each sample report summarizes validated sample metadata, read filtering, segment recovery, coverage, BLAST assignments, H5N1 screening, GenoFLU results, VADR status, and review flags. Reports are generated as self-contained HTML and are also packaged into the portable `.wings` bundle for browser-based navigation.
 
 Build one sample report with:
 
@@ -712,6 +772,31 @@ A `PASS` result should be interpreted as an analytical screening flag rather tha
 When the H5N1 screen does not pass, the GenoFLU output contains a status indicating that the sample was not classified as H5N1 by this screening criterion.
 
 ## Troubleshooting
+
+### Metadata validation fails
+
+WINGS validates `metadata.tsv` before sample-level metadata are propagated into reports. Common causes of failure include missing required columns, duplicate `sample_id` values, sample identifiers that do not match FASTQ filenames, non-ISO collection dates, or invalid coordinates.
+
+Check the configured metadata path:
+
+```yaml
+metadata_file: "metadata.tsv"
+metadata_require_all_samples: true
+```
+
+Then inspect the identifiers derived from the input FASTQs and compare them with the first column of `metadata.tsv`:
+
+```bash
+printf "FASTQ samples:\n"
+find data -maxdepth 1 -type f -name '*.fastq.gz' -print \
+  | sed 's#^.*/##; s/\.fastq\.gz$//' \
+  | sort
+
+printf "\nMetadata sample_id values:\n"
+cut -f1 metadata.tsv | tail -n +2 | sort
+```
+
+With `metadata_require_all_samples: true`, every detected FASTQ sample must have a matching metadata record.
 
 ### No samples are detected
 
@@ -852,7 +937,9 @@ Rerun the environment creation or complete workflow command.
 
 ## Reproducibility and data management
 
-- `porechop_abi` is used instead of the original Porechop package for Apple Silicon and Linux ARM64 portability.
+- `porechop_abi` is used instead of the original Porechop package for Apple Silicon and Linux ARM64 portability, with ab-initio adapter inference enabled.
+- `fastplong` performs long-read quality and length filtering with its adapter-trimming step disabled to avoid a second adapter-trimming pass after Porechop ABI.
+- Sample metadata are validated before report generation and propagated into sample-specific metadata outputs.
 - Rule-specific Conda environments are stored under `.snakemake/conda/`.
 - IRMA runs in Docker on macOS and in Apptainer or Singularity on the ARM64 cluster.
 - The BLAST reference archive, generated database, input reads, results, local configuration, and Snakemake working files should not be committed to Git.
@@ -901,3 +988,10 @@ Planned or under-development enhancements include:
 - Automated public-health narrative summaries
 - Additional export formats, including PDF
 
+## Use of large language models and ChatGPT
+
+Large language models, including OpenAI ChatGPT, were used during development of WINGS as a software-development and documentation assistant. Uses included brainstorming workflow design, reviewing and refining code, troubleshooting Snakemake and reporting behavior, and drafting or editing documentation.
+
+All workflow logic, code changes, configuration decisions, and scientific interpretations remain the responsibility of the WINGS developers and should be independently reviewed and validated. ChatGPT is not used by the workflow to generate sequencing results, assemble influenza genomes, assign subtypes or genotypes, call variants, or replace the underlying bioinformatics tools described above.
+
+Users adapting WINGS should apply the same standard to any LLM-assisted changes: review the generated code, verify tool parameters and dependencies, test changes on appropriate data, and document substantive LLM assistance when required by institutional, journal, or funding-agency policies.
