@@ -1,5 +1,9 @@
 # WINGS
 
+<p align="center">
+  <img src="wings_logo.jpg" alt="WINGS logo" width="360">
+</p>
+
 **Wild-bird Influenza Genomics and Surveillance**
 
 WINGS is a portable Snakemake workflow for genomic analysis of avian influenza A virus from Oxford Nanopore sequencing reads. It performs read preprocessing, influenza assembly, segment-level quality assessment, consensus polishing, variant calling, subtype screening, genotype assignment, annotation, and generation of interactive HTML reports.
