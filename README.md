@@ -1,4 +1,4 @@
-#Wild-bird Influenza Genomics and Surveillance (WINGS)
+# Wild-bird Influenza Genomics and Surveillance (WINGS)
 
 <p align="center">
   <img src="wings_logo.jpg" alt="WINGS logo" width="360">
