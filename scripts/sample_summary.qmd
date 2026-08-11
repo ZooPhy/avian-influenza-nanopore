@@ -227,7 +227,15 @@ display(
 reads_before = int(row["reads_before"])
 reads_after = int(row["reads_after"])
 reads_removed = max(reads_before - reads_after, 0)
-reads_with_adapters = int(row["reads_with_adapters"])
+
+# fastplong reports reads_with_adapters as NA when adapter trimming is disabled.
+# Preserve that as missing rather than converting it to zero.
+adapter_text = str(row["reads_with_adapters"]).strip()
+if not adapter_text or adapter_text.upper() in {"NA", "N/A", "NAN", "NONE"}:
+    reads_with_adapters = None
+else:
+    reads_with_adapters = int(float(adapter_text))
+
 bases_before = int(row["bases_before"])
 bases_after = int(row["bases_after"])
 
@@ -236,7 +244,12 @@ read_processing_data = {
     "bases": {"before": bases_before, "after": bases_after, "removed": max(bases_before - bases_after, 0), "retention": (bases_after / bases_before) if bases_before else 0},
     "q20": {"before": float(row["q20_rate_before"]), "after": float(row["q20_rate_after"])},
     "q30": {"before": float(row["q30_rate_before"]), "after": float(row["q30_rate_after"])},
-    "adapters": {"count": reads_with_adapters, "fraction": (reads_with_adapters / reads_before) if reads_before else 0},
+    "adapters": {
+        "count": reads_with_adapters,
+        "fraction": (reads_with_adapters / reads_before)
+        if reads_with_adapters is not None and reads_before
+        else None,
+    },
 }
 read_json = json.dumps(read_processing_data, ensure_ascii=False).replace("</", "<\\/")
 
