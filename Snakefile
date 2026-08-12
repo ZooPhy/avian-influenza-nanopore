@@ -79,6 +79,7 @@ SAMPLE_FASTQ = _discover_fastq_files(READS)
 SAMPLES = sorted(SAMPLE_FASTQ)
 
 COVERAGE_MIN = float(config.get("coverage_min_depth", 50.0))
+COVERAGE_MIN_BREADTH = float(config.get("coverage_min_breadth", 0.95))
 
 IRMA_IMAGE = str(config.get("irma_image", "docker://ghcr.io/cdcgov/irma:latest"))
 IRMA_MODULE = str(config.get("irma_module", "FLU-minion"))
@@ -686,9 +687,10 @@ rule check_coverage:
         flag=f"{RESULTS}/{{sample}}/coverage_flags/{{segment}}.flag",
         stats=f"{RESULTS}/{{sample}}/coverage_stats/{{segment}}.tsv"
     params:
-        min_median_depth=COVERAGE_MIN
+        min_median_depth=COVERAGE_MIN,
+        min_breadth=COVERAGE_MIN_BREADTH
     conda:
-        "envs/pysam.yaml"
+        "envs/coverage.yaml"
     script:
         "scripts/check_coverage.py"
 
@@ -1123,7 +1125,7 @@ rule concat_consensus:
 #
 # This is an IRMA-supported H5/N1 screening criterion, not an independent
 # definitive subtype call. It requires normalized HA and NA contigs identified
-# as H5 and N1 and both to pass the configured depth threshold.
+# as H5 and N1 and both to pass the configured segment coverage QC.
 # -----------------------------------------------------------------------------
 rule detect_h5n1:
     input:

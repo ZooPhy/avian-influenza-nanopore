@@ -24,7 +24,7 @@ Most tools run in rule-specific Conda environments. IRMA runs in a container sel
 - `fastplong` read-quality and length filtering without a second adapter-trimming pass
 - Sample metadata validation and integration
 - IRMA `FLU-minion` assembly
-- Segment-level coverage assessment
+- Segment-level coverage assessment using median depth and breadth-at-depth criteria
 - Medaka consensus polishing and variant calling
 - BLAST-based segment identification
 - H5N1 analytical screening
@@ -60,7 +60,7 @@ IRMA FLU-minion
     |
     v
 Segment-level coverage assessment
-(default median-depth threshold: 50x)
+(default: median depth >=50x and >=95% of positions at >=50x)
     |
     +--> Medaka consensus polishing
     +--> Medaka variant calling
@@ -98,6 +98,7 @@ NanoPlot is also available as an optional raw-read quality-control target.
 │   └── config.example.yaml
 ├── envs/
 │   ├── blast.yaml
+│   ├── coverage.yaml
 │   ├── fastplong.yaml
 │   ├── genoflu.yaml
 │   ├── medaka.yaml
@@ -417,6 +418,7 @@ reads_pattern: "{sample}.fastq.gz"
 results_dir: "results"
 
 coverage_min_depth: 50
+coverage_min_breadth: 0.95
 
 porechop_command: "porechop_abi"
 porechop_mem_mb: 12000
@@ -449,6 +451,7 @@ reads_pattern: "{sample}.fastq.gz"
 results_dir: "results"
 
 coverage_min_depth: 50
+coverage_min_breadth: 0.95
 
 porechop_command: "porechop_abi"
 porechop_mem_mb: 80000
@@ -750,13 +753,16 @@ python scripts/serve_reports.py --no-browser
 
 ## Coverage criterion
 
-Each influenza segment is evaluated independently. A segment passes when its median depth is greater than or equal to the configured threshold.
+Each influenza segment is evaluated independently from its normalized IRMA BAM. Per-position depth is calculated with `samtools depth -aa -q 0 -Q 0`. The `-aa` option ensures that zero-depth reference positions are included in the denominator. Coverage breadth is the fraction of reference positions whose depth is greater than or equal to `coverage_min_depth`.
 
-Default:
+Defaults:
 
 ```yaml
 coverage_min_depth: 50
+coverage_min_breadth: 0.95
 ```
+
+With these defaults, a segment must have a median depth of at least **50x** and at least **95% of reference positions at 50x or greater**. The reported `breadth_covered` value therefore represents breadth at the configured depth threshold, not merely the fraction of positions with any coverage.
 
 Only passing segments proceed through Medaka and BLAST analysis.
 
@@ -943,7 +949,9 @@ Rerun the environment creation or complete workflow command.
 
 - `porechop_abi` is used instead of the original Porechop package for Apple Silicon and Linux ARM64 portability, with ab-initio adapter inference enabled.
 - `fastplong` performs long-read quality and length filtering with its adapter-trimming step disabled to avoid a second adapter-trimming pass after Porechop ABI.
+- Segment depth is calculated with `samtools depth -aa -q 0 -Q 0`; breadth is the fraction of all reference positions meeting the configured depth threshold.
 - Sample metadata are validated before report generation and propagated into sample-specific metadata outputs.
+- Segment QC requires both the configured median-depth threshold and the configured breadth-at-depth threshold; the default is median depth >=50x with >=95% of positions at >=50x.
 - Rule-specific Conda environments are stored under `.snakemake/conda/`.
 - IRMA runs in Docker on macOS and in Apptainer or Singularity on the ARM64 cluster.
 - The BLAST reference archive, generated database, input reads, results, local configuration, and Snakemake working files should not be committed to Git.

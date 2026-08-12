@@ -1,7 +1,7 @@
-name: coverage
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
+  - defaults
 dependencies:
-  - pysam
-  - numpy
+  - python=3.12
+  - samtools=1.24

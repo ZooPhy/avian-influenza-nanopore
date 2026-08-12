@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Compute segment coverage directly from a normalized IRMA BAM."""
-
+"""Compute segment coverage from a normalized IRMA BAM using samtools depth."""
 
 import csv
 import statistics
+import subprocess
 from pathlib import Path
-
-import pysam
 
 
 def read_manifest_row(manifest_path: Path, segment: str) -> dict[str, str]:
@@ -25,6 +23,7 @@ def write_outputs(
     *,
     segment: str,
     threshold: float,
+    min_breadth: float,
     status: str,
     contig: str = "NA",
     positions: int = 0,
@@ -51,6 +50,7 @@ def write_outputs(
         "max_depth",
         "breadth_covered",
         "threshold",
+        "minimum_breadth",
         "status",
         "n_candidates",
         "selection_reason",
@@ -67,6 +67,7 @@ def write_outputs(
         "max_depth": maximum,
         "breadth_covered": breadth,
         "threshold": f"{threshold:.2f}",
+        "minimum_breadth": f"{min_breadth:.3f}",
         "status": status,
         "n_candidates": candidate_count,
         "selection_reason": reason,
@@ -77,42 +78,73 @@ def write_outputs(
         writer.writerow(row)
 
 
-def depths_without_index(bam: pysam.AlignmentFile) -> tuple[list[int], str]:
-    """Compute per-position depth by streaming a BAM without requiring an index."""
-    references = list(bam.references)
-    lengths = list(bam.lengths)
-    depth_by_reference = {
-        reference: [0] * length for reference, length in zip(references, lengths)
-    }
+def samtools_depths(bam_path: Path) -> tuple[list[int], str]:
+    """Return per-reference-position depths from ``samtools depth -aa``.
 
-    for read in bam.fetch(until_eof=True):
-        if read.is_unmapped or read.reference_id < 0:
-            continue
-        reference = bam.get_reference_name(read.reference_id)
-        values = depth_by_reference.get(reference)
-        if values is None:
-            continue
-        for position in read.get_reference_positions(full_length=False):
-            if position is not None and 0 <= position < len(values):
-                values[position] += 1
+    ``-aa`` is required so zero-depth positions are included in the denominator
+    used for coverage breadth. Base-quality and mapping-quality thresholds are
+    set explicitly to zero to make the intended counting behavior reproducible.
+    """
+    command = [
+        "samtools",
+        "depth",
+        "-aa",
+        "-q",
+        "0",
+        "-Q",
+        "0",
+        str(bam_path),
+    ]
 
-    all_depths: list[int] = []
-    for reference in references:
-        all_depths.extend(depth_by_reference[reference])
-    contig = references[0] if len(references) == 1 else ",".join(references)
-    return all_depths, contig
+    depths: list[int] = []
+    contigs: list[str] = []
+    seen_contigs: set[str] = set()
 
-
-def depths_with_index(bam: pysam.AlignmentFile) -> tuple[list[int], str]:
-    all_depths: list[int] = []
-    for reference, length in zip(bam.references, bam.lengths):
-        a, c, g, t = bam.count_coverage(reference, start=0, stop=length, quality_threshold=0)
-        all_depths.extend(
-            int(a[index] + c[index] + g[index] + t[index])
-            for index in range(length)
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
-    contig = bam.references[0] if len(bam.references) == 1 else ",".join(bam.references)
-    return all_depths, contig
+    except OSError as exc:
+        raise RuntimeError(f"could not start samtools depth: {exc}") from exc
+
+    assert process.stdout is not None
+    for line_number, line in enumerate(process.stdout, start=1):
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) < 3:
+            process.kill()
+            raise RuntimeError(
+                f"unexpected samtools depth output at line {line_number}: {line!r}"
+            )
+        reference = fields[0]
+        try:
+            depth = int(fields[2])
+        except ValueError as exc:
+            process.kill()
+            raise RuntimeError(
+                f"non-integer depth from samtools at line {line_number}: {fields[2]!r}"
+            ) from exc
+
+        if reference not in seen_contigs:
+            seen_contigs.add(reference)
+            contigs.append(reference)
+        depths.append(depth)
+
+    stderr = process.stderr.read() if process.stderr is not None else ""
+    return_code = process.wait()
+    if return_code != 0:
+        message = stderr.strip() or f"samtools depth exited with status {return_code}"
+        raise RuntimeError(message)
+
+    contig = "NA" if not contigs else (contigs[0] if len(contigs) == 1 else ",".join(contigs))
+    return depths, contig
 
 
 def main() -> None:
@@ -122,6 +154,7 @@ def main() -> None:
     flag_out = Path(snakemake.output.flag)
     stats_out = Path(snakemake.output.stats)
     threshold = float(snakemake.params.min_median_depth)
+    min_breadth = float(snakemake.params.min_breadth)
 
     manifest_row = read_manifest_row(manifest_path, segment)
     manifest_status = manifest_row.get("status", "MISSING")
@@ -135,6 +168,7 @@ def main() -> None:
             stats_out,
             segment=segment,
             threshold=threshold,
+            min_breadth=min_breadth,
             status="MISSING",
             contig=contig,
             candidate_count=candidate_count,
@@ -144,31 +178,20 @@ def main() -> None:
         return
 
     try:
-        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
-            if not bam.references:
-                raise ValueError("BAM has no reference sequences")
-            try:
-                has_index = bam.has_index()
-            except (ValueError, OSError):
-                has_index = False
-            if has_index:
-                depths, bam_contig = depths_with_index(bam)
-                method = "pysam count_coverage using BAM index"
-            else:
-                depths, bam_contig = depths_without_index(bam)
-                method = "streamed BAM alignments without index"
+        depths, bam_contig = samtools_depths(bam_path)
     except Exception as exc:
         write_outputs(
             flag_out,
             stats_out,
             segment=segment,
             threshold=threshold,
+            min_breadth=min_breadth,
             status="ERROR",
             contig=contig,
             candidate_count=candidate_count,
-            reason=f"could not read normalized BAM: {exc}",
+            reason=f"samtools depth failed for normalized BAM: {exc}",
         )
-        print(f"[check_coverage] {segment}: BAM error -> ERROR: {exc}")
+        print(f"[check_coverage] {segment}: samtools depth error -> ERROR: {exc}")
         return
 
     if not depths:
@@ -177,10 +200,11 @@ def main() -> None:
             stats_out,
             segment=segment,
             threshold=threshold,
+            min_breadth=min_breadth,
             status="MISSING",
             contig=contig,
             candidate_count=candidate_count,
-            reason="BAM contained no reference positions",
+            reason="samtools depth returned no reference positions",
         )
         print(f"[check_coverage] {segment}: no reference positions -> MISSING")
         return
@@ -189,8 +213,8 @@ def main() -> None:
     mean = sum(depths) / len(depths)
     minimum = min(depths)
     maximum = max(depths)
-    breadth = sum(depth > 0 for depth in depths) / len(depths)
-    status = "PASS" if median >= threshold else "FAIL"
+    breadth = sum(depth >= threshold for depth in depths) / len(depths)
+    status = "PASS" if median >= threshold and breadth >= min_breadth else "FAIL"
     selected_contig = contig if contig != "NA" else bam_contig
 
     write_outputs(
@@ -198,6 +222,7 @@ def main() -> None:
         stats_out,
         segment=segment,
         threshold=threshold,
+        min_breadth=min_breadth,
         status=status,
         contig=selected_contig,
         positions=len(depths),
@@ -207,11 +232,16 @@ def main() -> None:
         maximum=f"{maximum:.2f}",
         breadth=f"{breadth:.3f}",
         candidate_count=candidate_count,
-        reason=f"coverage computed from normalized BAM; {method}",
+        reason=(
+            "coverage computed from normalized BAM with samtools depth -aa -q 0 -Q 0; "
+            f"PASS requires median depth >= {threshold:.2f}x and "
+            f"breadth at >= {threshold:.2f}x >= {min_breadth:.3f}"
+        ),
     )
     print(
         f"[check_coverage] {segment}: contig={selected_contig}; positions={len(depths)}; "
-        f"median={median:.2f}; mean={mean:.2f}; breadth={breadth:.3f} -> {status}"
+        f"median={median:.2f}; mean={mean:.2f}; "
+        f"breadth_at_{threshold:g}x={breadth:.3f} (min={min_breadth:.3f}) -> {status}"
     )
 
 
