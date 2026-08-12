@@ -24,7 +24,7 @@ Most tools run in rule-specific Conda environments. IRMA runs in a container sel
 - `fastplong` read-quality and length filtering without a second adapter-trimming pass
 - Sample metadata validation and integration
 - IRMA `FLU-minion` assembly
-- Segment-level coverage assessment using median depth and breadth-at-depth criteria
+- Segment-level QC using depth, breadth-at-depth, expected-length, and N-content criteria
 - Medaka consensus polishing and variant calling
 - BLAST-based segment identification
 - H5N1 analytical screening
@@ -59,8 +59,9 @@ IRMA FLU-minion
 (influenza assembly)
     |
     v
-Segment-level coverage assessment
-(default: median depth >=50x and >=95% of positions at >=50x)
+Segment-level QC
+(default: median depth >=50x; >=95% of positions at >=50x;
+ minimum segment length; <=1% Ns; long segments warned)
     |
     +--> Medaka consensus polishing
     +--> Medaka variant calling
@@ -419,6 +420,7 @@ results_dir: "results"
 
 coverage_min_depth: 50
 coverage_min_breadth: 0.95
+segment_max_n_fraction: 0.01
 
 porechop_command: "porechop_abi"
 porechop_mem_mb: 12000
@@ -452,6 +454,7 @@ results_dir: "results"
 
 coverage_min_depth: 50
 coverage_min_breadth: 0.95
+segment_max_n_fraction: 0.01
 
 porechop_command: "porechop_abi"
 porechop_mem_mb: 80000
@@ -751,22 +754,36 @@ To start the server without automatically opening a browser:
 python scripts/serve_reports.py --no-browser
 ```
 
-## Coverage criterion
+## Segment QC criterion
 
-Each influenza segment is evaluated independently from its normalized IRMA BAM. Per-position depth is calculated with `samtools depth -aa -q 0 -Q 0`. The `-aa` option ensures that zero-depth reference positions are included in the denominator. Coverage breadth is the fraction of reference positions whose depth is greater than or equal to `coverage_min_depth`.
+Each influenza segment is evaluated independently before Medaka polishing. Per-position depth is calculated from the normalized IRMA BAM with `samtools depth -aa -q 0 -Q 0`. The `-aa` option ensures that zero-depth reference positions are included in the denominator. Coverage breadth is the fraction of reference positions whose depth is greater than or equal to `coverage_min_depth`. WINGS also evaluates the normalized IRMA consensus FASTA for segment length and the fraction of ambiguous `N` bases. The configured lower length bound is a hard minimum; the upper bound is a review guide rather than a hard failure threshold.
 
 Defaults:
 
 ```yaml
 coverage_min_depth: 50
 coverage_min_breadth: 0.95
+segment_max_n_fraction: 0.01
+segment_expected_lengths:
+  PB2: [2200, 2400]
+  PB1: [2200, 2400]
+  PA: [2100, 2300]
+  HA: [1600, 1800]
+  NP: [1450, 1600]
+  NA: [1300, 1500]
+  MP: [950, 1050]
+  NS: [800, 950]
 ```
 
-With these defaults, a segment must have a median depth of at least **50x** and at least **95% of reference positions at 50x or greater**. The reported `breadth_covered` value therefore represents breadth at the configured depth threshold, not merely the fraction of positions with any coverage.
+With these defaults, a segment passes the hard QC gate when **all** of the following are true: median depth is at least **50x**; at least **95% of reference positions are at 50x or greater**; consensus length is at least the configured segment-specific minimum; and no more than **1% of consensus bases are `N`**. A consensus longer than the configured upper length guide remains eligible for downstream analysis but receives a length `WARNING` for review. The reported `breadth_covered` value therefore represents breadth at the configured depth threshold, not merely the fraction of positions with any coverage.
 
-Only passing segments proceed through Medaka and BLAST analysis.
+The segment-length bounds are configurable QC guardrails rather than subtype-confirmation criteria. The lower bound protects against truncated assemblies. The upper bound highlights unexpectedly long consensuses without automatically rejecting sequences that may contain valid terminal or assay-specific sequence. Bounds should be changed only when the assay design or validated biological targets justify different values.
 
-For subtype-specific HA and NA outputs, the workflow selects the relevant IRMA coverage table deterministically and records the selected table and reason in the segment coverage statistics.
+The per-segment statistics record the individual `coverage_status`, `length_status`, and `n_content_status` values as well as the final `overall_status`. The existing `results/<sample>/coverage_flags/<segment>.flag` path is retained for workflow compatibility, but its `PASS` now means that the segment passed the complete segment-QC criterion rather than coverage alone.
+
+Only segments passing the hard segment-QC criteria proceed through Medaka and BLAST analysis; an upper-length warning alone does not block downstream analysis.
+
+For subtype-specific HA and NA outputs, the workflow selects the relevant IRMA coverage table deterministically and records the selected table and reason in the segment QC statistics.
 
 ## H5N1 screening
 
@@ -774,8 +791,8 @@ The H5N1 rule is a screening criterion based on IRMA-supported HA and NA assignm
 
 - an H5-associated HA assignment
 - an N1-associated NA assignment
-- passing HA coverage
-- passing NA coverage
+- passing HA segment QC
+- passing NA segment QC
 
 A `PASS` result should be interpreted as an analytical screening flag rather than an independent confirmatory subtype test.
 
@@ -951,7 +968,7 @@ Rerun the environment creation or complete workflow command.
 - `fastplong` performs long-read quality and length filtering with its adapter-trimming step disabled to avoid a second adapter-trimming pass after Porechop ABI.
 - Segment depth is calculated with `samtools depth -aa -q 0 -Q 0`; breadth is the fraction of all reference positions meeting the configured depth threshold.
 - Sample metadata are validated before report generation and propagated into sample-specific metadata outputs.
-- Segment QC requires both the configured median-depth threshold and the configured breadth-at-depth threshold; the default is median depth >=50x with >=95% of positions at >=50x.
+- Segment QC requires the configured depth, breadth-at-depth, expected-length, and N-content criteria; by default this is median depth >=50x, >=95% of positions at >=50x, the configured segment-specific length range, and <=1% Ns.
 - Rule-specific Conda environments are stored under `.snakemake/conda/`.
 - IRMA runs in Docker on macOS and in Apptainer or Singularity on the ARM64 cluster.
 - The BLAST reference archive, generated database, input reads, results, local configuration, and Snakemake working files should not be committed to Git.

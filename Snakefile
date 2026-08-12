@@ -80,6 +80,49 @@ SAMPLES = sorted(SAMPLE_FASTQ)
 
 COVERAGE_MIN = float(config.get("coverage_min_depth", 50.0))
 COVERAGE_MIN_BREADTH = float(config.get("coverage_min_breadth", 0.95))
+SEGMENT_MAX_N_FRACTION = float(config.get("segment_max_n_fraction", 0.01))
+
+if not 0.0 <= COVERAGE_MIN_BREADTH <= 1.0:
+    raise ValueError("coverage_min_breadth must be between 0 and 1")
+if not 0.0 <= SEGMENT_MAX_N_FRACTION <= 1.0:
+    raise ValueError("segment_max_n_fraction must be between 0 and 1")
+
+# Segment-length bounds are QC guardrails. The lower bound is a hard minimum;
+# the upper bound is a review threshold only and does not block downstream analysis.
+DEFAULT_SEGMENT_EXPECTED_LENGTHS = {
+    "PB2": (2200, 2400),
+    "PB1": (2200, 2400),
+    "PA": (2100, 2300),
+    "HA": (1600, 1800),
+    "NP": (1450, 1600),
+    "NA": (1300, 1500),
+    "MP": (950, 1050),
+    "NS": (800, 950),
+}
+
+configured_expected_lengths = config.get("segment_expected_lengths", {}) or {}
+if not isinstance(configured_expected_lengths, dict):
+    raise ValueError("segment_expected_lengths must be a YAML mapping")
+unknown_length_segments = set(configured_expected_lengths) - set(DEFAULT_SEGMENT_EXPECTED_LENGTHS)
+if unknown_length_segments:
+    raise ValueError(
+        "segment_expected_lengths contains unsupported segment(s): "
+        + ", ".join(sorted(unknown_length_segments))
+    )
+
+SEGMENT_EXPECTED_LENGTHS = {}
+for segment, default_bounds in DEFAULT_SEGMENT_EXPECTED_LENGTHS.items():
+    bounds = configured_expected_lengths.get(segment, default_bounds)
+    if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+        raise ValueError(
+            f"segment_expected_lengths[{segment!r}] must contain [minimum, maximum]"
+        )
+    minimum, maximum = (int(bounds[0]), int(bounds[1]))
+    if minimum <= 0 or maximum < minimum:
+        raise ValueError(
+            f"invalid segment-length bounds for {segment}: {minimum}-{maximum}"
+        )
+    SEGMENT_EXPECTED_LENGTHS[segment] = (minimum, maximum)
 
 IRMA_IMAGE = str(config.get("irma_image", "docker://ghcr.io/cdcgov/irma:latest"))
 IRMA_MODULE = str(config.get("irma_module", "FLU-minion"))
@@ -677,18 +720,26 @@ checkpoint irma:
 
 
 # -----------------------------------------------------------------------------
-# Coverage decision per segment family
+# Pre-polishing segment QC
+#
+# The legacy coverage_flags path is retained for compatibility, but the flag now
+# represents the overall segment QC decision: coverage + expected length +
+# consensus N content.
 # -----------------------------------------------------------------------------
 rule check_coverage:
     input:
         segments_dir=irma_segments_dir,
-        manifest=irma_manifest_path
+        manifest=irma_manifest_path,
+        consensus=fasta_path
     output:
         flag=f"{RESULTS}/{{sample}}/coverage_flags/{{segment}}.flag",
         stats=f"{RESULTS}/{{sample}}/coverage_stats/{{segment}}.tsv"
     params:
         min_median_depth=COVERAGE_MIN,
-        min_breadth=COVERAGE_MIN_BREADTH
+        min_breadth=COVERAGE_MIN_BREADTH,
+        max_n_fraction=SEGMENT_MAX_N_FRACTION,
+        expected_length_min=lambda wildcards: SEGMENT_EXPECTED_LENGTHS[wildcards.segment][0],
+        expected_length_max=lambda wildcards: SEGMENT_EXPECTED_LENGTHS[wildcards.segment][1]
     conda:
         "envs/coverage.yaml"
     script:
@@ -696,7 +747,7 @@ rule check_coverage:
 
 
 # -----------------------------------------------------------------------------
-# Per-sample coverage summary
+# Per-sample segment QC summary
 # -----------------------------------------------------------------------------
 rule coverage_table:
     input:
@@ -757,7 +808,7 @@ rule medaka_inference:
                 exit 1
             fi
         else
-            echo "Segment did not pass coverage; Medaka inference skipped." > {log:q}
+            echo "Segment did not pass segment QC; Medaka inference skipped." > {log:q}
             : > {output.features:q}
         fi
         """
@@ -792,7 +843,7 @@ rule medaka_consensus:
                 {output.consensus:q} \
                 > {log:q} 2>&1
         else
-            echo "Segment did not pass coverage or features are empty; consensus skipped." > {log:q}
+            echo "Segment did not pass segment QC or features are empty; consensus skipped." > {log:q}
             : > {output.consensus:q}
         fi
         """
@@ -864,14 +915,14 @@ rule medaka_vcf:
                 exit 1
             fi
         else
-            echo "Segment did not pass coverage or features are empty; VCF generation skipped." \
+            echo "Segment did not pass segment QC or features are empty; VCF generation skipped." \
                 >> {log:q}
             : > {output.vcf:q}
         fi
         """
 
 # -----------------------------------------------------------------------------
-# Prepare coverage-qualified polished consensuses for VADR
+# Prepare segment-QC-qualified polished consensuses for VADR
 # -----------------------------------------------------------------------------
 rule prepare_vadr_input:
     input:
@@ -932,7 +983,7 @@ rule vadr_annotate:
 
         # An empty input is a legitimate result when no segment passes coverage.
         if input_path.stat().st_size == 0:
-            log_path.write_text("No coverage-qualified consensus sequences; VADR skipped.\n")
+            log_path.write_text("No segment-QC-qualified consensus sequences; VADR skipped.\n")
             done_path.touch()
         else:
             runtime = str(params.runtime).lower()
@@ -1047,7 +1098,7 @@ rule blastn:
         mkdir -p "$(dirname {output.txt:q})"
 
         if [[ ! -s {input.fasta:q} ]] || ! grep -q '^PASS$' {input.flag:q}; then
-            echo "Segment did not pass coverage or consensus is empty; BLAST skipped." > {log:q}
+            echo "Segment did not pass segment QC or consensus is empty; BLAST skipped." > {log:q}
             : > {output.txt:q}
             exit 0
         fi
@@ -1125,7 +1176,7 @@ rule concat_consensus:
 #
 # This is an IRMA-supported H5/N1 screening criterion, not an independent
 # definitive subtype call. It requires normalized HA and NA contigs identified
-# as H5 and N1 and both to pass the configured segment coverage QC.
+# as H5 and N1 and both to pass the configured segment QC.
 # -----------------------------------------------------------------------------
 rule detect_h5n1:
     input:
@@ -1138,7 +1189,9 @@ rule detect_h5n1:
     log:
         f"{RESULTS}/{{sample}}/genoflu/detect_h5n1.log"
     params:
-        threshold=COVERAGE_MIN
+        threshold=COVERAGE_MIN,
+        min_breadth=COVERAGE_MIN_BREADTH,
+        max_n_fraction=SEGMENT_MAX_N_FRACTION
     run:
         def read_flag(path):
             try:
@@ -1174,7 +1227,9 @@ rule detect_h5n1:
         output_path.write_text("PASS\n" if passed else "FAIL\n")
         log_path.write_text(
             f"sample={wildcards.sample}\n"
-            f"coverage_threshold={params.threshold}\n"
+            f"segment_qc_depth_threshold={params.threshold}\n"
+            f"segment_qc_minimum_breadth={params.min_breadth}\n"
+            f"segment_qc_max_n_fraction={params.max_n_fraction}\n"
             f"HA_status={ha_status}\n"
             f"HA_selected_contig={ha_contig}\n"
             f"NA_status={na_status}\n"
@@ -1221,6 +1276,8 @@ rule sample_summary_html:
         html=f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.html"
     params:
         coverage_threshold=COVERAGE_MIN,
+        coverage_breadth_threshold=COVERAGE_MIN_BREADTH,
+        max_n_fraction=SEGMENT_MAX_N_FRACTION,
         snakemake_version=SNAKEMAKE_VERSION,
     conda:
         "envs/reporting.yaml"
@@ -1261,7 +1318,9 @@ rule sample_summary_html:
               -P "blast_file:${{blast_abs}}" \
               -P "genoflu_file:${{genoflu_abs}}" \
               -P "vadr_log_file:${{vadr_log_abs}}" \
-              -P "coverage_threshold:{params.coverage_threshold}"
+              -P "coverage_threshold:{params.coverage_threshold}" \
+              -P "coverage_breadth_threshold:{params.coverage_breadth_threshold}" \
+              -P "max_n_fraction:{params.max_n_fraction}"
             )
 
         rm -f "$temp_qmd"
@@ -1308,6 +1367,9 @@ rule run_summary_html:
         samples=",".join(SAMPLES),
         snakemake_version=SNAKEMAKE_VERSION,
         results_dir=RESULTS,
+        coverage_threshold=COVERAGE_MIN,
+        coverage_breadth_threshold=COVERAGE_MIN_BREADTH,
+        max_n_fraction=SEGMENT_MAX_N_FRACTION,
     conda:
         "envs/reporting.yaml"
     shell:
@@ -1339,7 +1401,10 @@ rule run_summary_html:
               -P "results_dir:${{results_abs}}" \
               -P "samples:{params.samples}" \
               -P "run_summary_tsv:run_summary.tsv" \
-              -P "review_tsv:samples_requiring_review.tsv"
+              -P "review_tsv:samples_requiring_review.tsv" \
+              -P "coverage_threshold:{params.coverage_threshold}" \
+              -P "coverage_breadth_threshold:{params.coverage_breadth_threshold}" \
+              -P "max_n_fraction:{params.max_n_fraction}"
         )
 
         rm -f "$temp_qmd"

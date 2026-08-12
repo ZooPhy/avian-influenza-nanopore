@@ -18,6 +18,9 @@ params:
   samples: ""
   run_summary_tsv: "run_summary.tsv"
   review_tsv: "samples_requiring_review.tsv"
+  coverage_threshold: 50
+  coverage_breadth_threshold: 0.95
+  max_n_fraction: 0.01
 ---
 
 ```{r setup}
@@ -27,6 +30,10 @@ library(ggplot2)
 library(htmltools)
 library(knitr)
 library(gt)
+
+coverage_threshold <- as.numeric(params$coverage_threshold)
+coverage_breadth_threshold <- as.numeric(params$coverage_breadth_threshold)
+max_n_fraction <- as.numeric(params$max_n_fraction)
 
 sample_ids <- trimws(strsplit(params$samples, ",", fixed = TRUE)[[1]])
 sample_ids <- sample_ids[nzchar(sample_ids)]
@@ -332,7 +339,7 @@ overview |>
   gt(rowname_col = "Metric") |>
   tab_header(
     title = "Run Overview",
-    subtitle = "Coverage-qualified genome completeness across all samples"
+    subtitle = "QC-qualified genome completeness across all samples"
   ) |>
   fmt_percent(columns = Percent, decimals = 0) |>
   cols_label(
@@ -501,17 +508,16 @@ sample_table |>
   )
 ```
 
-## Coverage-qualified Genome Completeness
+## QC-qualified Genome Completeness
 
-Each influenza segment passes coverage QC when its median depth is at least **50x** and at least **95% of reference positions have depth of at least 50x**. Genome status is based on the number of the eight influenza A segments that pass this criterion:
+Each influenza segment passes WINGS segment QC when median depth is at least **`r format(coverage_threshold, trim = TRUE)`x**; at least **`r format(100 * coverage_breadth_threshold, trim = TRUE)`%** of reference positions have depth of at least **`r format(coverage_threshold, trim = TRUE)`x**; consensus length is at least the configured segment-specific minimum; and the consensus N fraction is at most **`r format(100 * max_n_fraction, trim = TRUE)`%**. A consensus longer than the configured upper length guide is retained as **PASS** but receives a length warning for review. Genome status is based on the number of the eight influenza A segments that pass the hard QC criteria:
 
-- **Complete:** 8 of 8 segments pass coverage QC
-- **Near-complete:** 6-7 of 8 segments pass coverage QC
-- **Partial:** 1-5 of 8 segments pass coverage QC
-- **Failed:** 0 of 8 segments pass coverage QC
+- **Complete:** 8 of 8 segments pass segment QC
+- **Near-complete:** 6-7 of 8 segments pass segment QC
+- **Partial:** 1-5 of 8 segments pass segment QC
+- **Failed:** 0 of 8 segments pass segment QC
 
-These categories describe **coverage-qualified genome recovery** and should not be interpreted as a substitute for downstream sequence-quality, annotation, or biological review.
-
+These categories describe **QC-qualified genome recovery** and should not be interpreted as a substitute for downstream annotation, biological review, or other assay-specific quality checks.
 
 ```{r}
 asu_palette <- c(

@@ -26,6 +26,8 @@ blast_file = None
 genoflu_file = None
 vadr_log_file = None
 coverage_threshold = 50
+coverage_breadth_threshold = 0.95
+max_n_fraction = 0.01
 ```
 
 ```{python}
@@ -148,14 +150,14 @@ header_html = f"""
   </div>
 
   <div class="metric-card">
-    <div class="metric-label">Segments passing coverage</div>
+    <div class="metric-label">Segments passing segment QC</div>
     <div class="metric-value">
       <span class="status-badge {segment_class}">
         {segments_pass} / 8
       </span>
     </div>
     <div class="metric-detail">
-      Coverage threshold: {float(coverage_threshold):g}x
+      Depth {float(coverage_threshold):g}x; breadth {float(coverage_breadth_threshold)*100:g}%; N <= {float(max_n_fraction)*100:g}%
     </div>
   </div>
 
@@ -191,7 +193,7 @@ overview = pd.DataFrame(
     {
         "Metric": [
             "Segments detected",
-            "Segments passing coverage",
+            "Segments passing segment QC",
             "Consensus segments",
             "H5N1 screen",
             "GenoFLU status",
@@ -282,43 +284,115 @@ display(HTML(f"""
 """))
 ```
 
-## Segment coverage
+## Segment QC
 
 ```{python}
 segment_order = ["PB2", "PB1", "PA", "HA", "NP", "NA", "MP", "NS"]
-expected_lengths = {
+# Backward-compatible fallback only. New coverage.tsv files carry the configured
+# expected-length bounds used by check_coverage.py.
+default_expected_lengths = {
     "PB2": (2200, 2400), "PB1": (2200, 2400), "PA": (2100, 2300),
     "HA": (1600, 1800), "NP": (1450, 1600), "NA": (1300, 1500),
     "MP": (950, 1050), "NS": (800, 950),
 }
+
 segment_data = coverage.copy()
 segment_data["segment"] = segment_data["segment"].astype(str)
 segment_data["contig"] = segment_data["contig"].astype(str)
-segment_data["coverage_status"] = segment_data["coverage_flag"].astype(str).str.upper()
-for column in ["length", "median_depth", "mean_depth", "breadth_covered"]:
-    segment_data[column] = pd.to_numeric(segment_data[column], errors="coerce").fillna(0)
 
-def completeness_status(record):
-    expected = expected_lengths.get(record["segment"])
-    if not expected:
-        return "REVIEW"
-    return "PASS" if expected[0] <= float(record["length"]) <= expected[1] else "REVIEW"
+numeric_columns = [
+    "length", "coverage_positions", "median_depth", "mean_depth", "breadth_covered",
+    "n_count", "n_fraction", "expected_length_min", "expected_length_max",
+    "maximum_n_fraction",
+]
+for column in numeric_columns:
+    if column not in segment_data.columns:
+        segment_data[column] = pd.NA
+    segment_data[column] = pd.to_numeric(segment_data[column], errors="coerce")
 
-segment_data["completeness_status"] = segment_data.apply(completeness_status, axis=1)
-segment_data["overall_status"] = segment_data.apply(
-    lambda r: "PASS" if r["coverage_status"] == "PASS" and r["completeness_status"] == "PASS"
-    else ("WARNING" if r["coverage_status"] == "PASS" else "REVIEW"), axis=1
+for column in ["length", "coverage_positions", "median_depth", "mean_depth", "breadth_covered", "n_count"]:
+    segment_data[column] = segment_data[column].fillna(0)
+
+# New coverage tables carry component QC fields. Older tables are rendered
+# conservatively rather than silently treating missing sequence-QC metrics as PASS.
+if "coverage_status" not in segment_data.columns:
+    segment_data["coverage_status"] = segment_data.get("coverage_flag", "MISSING")
+segment_data["coverage_status"] = segment_data["coverage_status"].astype(str).str.upper()
+
+def fallback_expected_bound(segment, index):
+    return default_expected_lengths.get(segment, (None, None))[index]
+
+segment_data["expected_length_min"] = segment_data.apply(
+    lambda r: r["expected_length_min"] if pd.notna(r["expected_length_min"])
+    else fallback_expected_bound(r["segment"], 0), axis=1
 )
-segment_data["expected_length_min"] = segment_data["segment"].map(lambda x: expected_lengths.get(x, (None, None))[0])
-segment_data["expected_length_max"] = segment_data["segment"].map(lambda x: expected_lengths.get(x, (None, None))[1])
+segment_data["expected_length_max"] = segment_data.apply(
+    lambda r: r["expected_length_max"] if pd.notna(r["expected_length_max"])
+    else fallback_expected_bound(r["segment"], 1), axis=1
+)
+segment_data["maximum_n_fraction"] = segment_data["maximum_n_fraction"].fillna(float(max_n_fraction))
+
+def derive_length_status(record):
+    minimum, maximum, length = record["expected_length_min"], record["expected_length_max"], record["length"]
+    if pd.isna(minimum) or pd.isna(maximum):
+        return "REVIEW"
+    if float(length) < float(minimum):
+        return "FAIL"
+    if float(length) > float(maximum):
+        return "WARNING"
+    return "PASS"
+
+if "length_status" not in segment_data.columns:
+    segment_data["length_status"] = segment_data.apply(derive_length_status, axis=1)
+else:
+    segment_data["length_status"] = segment_data["length_status"].astype(str).str.upper()
+    missing = segment_data["length_status"].isin({"", "NA", "NAN", "NONE"})
+    segment_data.loc[missing, "length_status"] = segment_data.loc[missing].apply(derive_length_status, axis=1)
+
+def derive_n_content_status(record):
+    if pd.isna(record["n_fraction"]) or pd.isna(record["maximum_n_fraction"]):
+        return "REVIEW"
+    return "PASS" if float(record["n_fraction"]) <= float(record["maximum_n_fraction"]) else "FAIL"
+
+if "n_content_status" not in segment_data.columns:
+    segment_data["n_content_status"] = segment_data.apply(derive_n_content_status, axis=1)
+else:
+    segment_data["n_content_status"] = segment_data["n_content_status"].astype(str).str.upper()
+    missing = segment_data["n_content_status"].isin({"", "NA", "NAN", "NONE"})
+    segment_data.loc[missing, "n_content_status"] = segment_data.loc[missing].apply(derive_n_content_status, axis=1)
+
+def derive_overall_status(record):
+    coverage = record["coverage_status"]
+    length = record["length_status"]
+    n_content = record["n_content_status"]
+    if coverage == "PASS" and length in {"PASS", "WARNING"} and n_content == "PASS":
+        return "PASS"
+    if any(status in {"MISSING", "ERROR", "REVIEW"} for status in [coverage, length, n_content]):
+        return "REVIEW"
+    return "FAIL"
+
+if "overall_status" not in segment_data.columns:
+    segment_data["overall_status"] = segment_data.apply(derive_overall_status, axis=1)
+else:
+    segment_data["overall_status"] = segment_data["overall_status"].astype(str).str.upper()
+    missing = segment_data["overall_status"].isin({"", "NA", "NAN", "NONE"})
+    segment_data.loc[missing, "overall_status"] = segment_data.loc[missing].apply(derive_overall_status, axis=1)
+
 segment_data["sort"] = segment_data["segment"].map({s:i for i,s in enumerate(segment_order)})
 segment_data = segment_data.sort_values("sort").drop(columns="sort")
-segment_records = segment_data[[
+segment_record_columns = [
     "segment", "contig", "length", "median_depth", "mean_depth", "breadth_covered",
-    "coverage_status", "completeness_status", "overall_status",
-    "expected_length_min", "expected_length_max"
-]].to_dict(orient="records")
-segment_payload = {"threshold": float(coverage_threshold), "segments": segment_records}
+    "n_count", "n_fraction", "coverage_status", "length_status", "n_content_status",
+    "overall_status", "expected_length_min", "expected_length_max", "maximum_n_fraction"
+]
+segment_records_df = segment_data[segment_record_columns].copy().astype(object)
+segment_records = segment_records_df.where(pd.notna(segment_records_df), None).to_dict(orient="records")
+segment_payload = {
+    "threshold": float(coverage_threshold),
+    "breadth_threshold": float(coverage_breadth_threshold),
+    "max_n_fraction": float(max_n_fraction),
+    "segments": segment_records,
+}
 segment_json = json.dumps(segment_payload, ensure_ascii=False).replace("</", "<\\/")
 
 display(HTML(f"""
@@ -326,8 +400,8 @@ display(HTML(f"""
   <div class="escape-viz-heading">
     <div>
       <div class="escape-viz-eyebrow">Influenza A genome QC</div>
-      <div class="escape-viz-title">Interactive segment coverage</div>
-      <div class="escape-viz-subtitle">Switch between median depth, completeness, and QC status. Select a segment for details.</div>
+      <div class="escape-viz-title">Interactive segment QC</div>
+      <div class="escape-viz-subtitle">Review depth, breadth-at-depth, expected length, N content, and overall QC status. Select a segment for details.</div>
     </div>
     <div class="escape-viz-accent" aria-hidden="true"></div>
   </div>
@@ -713,7 +787,7 @@ else:
 
     version_text = f' · VADR {html.escape(vadr["version"])}' if vadr["version"] else ""
     interpretation = (
-        f'VADR completed on {vadr["sequence_count"]} coverage-qualified consensus sequences: '
+        f'VADR completed on {vadr["sequence_count"]} segment-QC-qualified consensus sequences: '
         f'{vadr["pass_count"]} passed annotation checks and {vadr["fail_count"]} failed. '
         'A sequence-level VADR failure is a quality-control finding and does not mean the pipeline failed.'
     )
@@ -779,7 +853,7 @@ for _, segment_row in segment_data.iterrows():
     else:
         consensus_link = '<span class="file-unavailable">Not available</span>'
 
-    coverage_status = str(segment_row["coverage_status"]).upper()
+    overall_status = str(segment_row["overall_status"]).upper()
 
     if vcf_available:
         variant_count = count_vcf_records(vcf_path)
@@ -794,10 +868,10 @@ for _, segment_row in segment_data.iterrows():
             f'download="{html.escape(str(sample_id))}_{html.escape(segment)}_variants.vcf">'
             '<span aria-hidden="true">↓</span> VCF</a>'
         )
-    elif coverage_status != "PASS":
+    elif overall_status != "PASS":
         variant_summary = (
             '<span class="download-status download-status-fail">'
-            'Skipped: coverage</span>'
+            'Skipped: segment QC</span>'
         )
         vcf_link = '<span class="file-unavailable">Not generated</span>'
     else:
@@ -861,7 +935,7 @@ files_html = (
     + '</div>'
     '<div class="file-download-note">'
     'Variant counts include non-header records in each valid VCF. A zero-variant VCF is valid and remains downloadable. '
-    'Segments that fail coverage are reported as skipped rather than as having zero variants. '
+    'Segments that fail segment QC are reported as skipped rather than as having zero variants. '
     'Clicking a FASTA or VCF link downloads the file without opening a separate browser tab.'
     '</div>'
     '</div>'
@@ -947,7 +1021,9 @@ provenance_rows = [
     ("Medaka", medaka_version or "Not captured"),
     ("Quarto", quarto_version or "Not captured"),
     ("Python", platform.python_version()),
-    ("Coverage threshold", f"{float(coverage_threshold):g}x median depth"),
+    ("Median-depth threshold", f"{float(coverage_threshold):g}x"),
+    ("Minimum breadth at depth threshold", f"{float(coverage_breadth_threshold)*100:g}%"),
+    ("Maximum N fraction", f"{float(max_n_fraction)*100:g}%"),
 ]
 
 provenance_df = pd.DataFrame(
@@ -955,13 +1031,18 @@ provenance_df = pd.DataFrame(
     columns=["Item", "Value"],
 )
 
-length_rows = [
-    {
-        "Segment": segment,
-        "Expected complete length": f"{minimum:,}–{maximum:,} nt",
-    }
-    for segment, (minimum, maximum) in expected_lengths.items()
-]
+length_rows = []
+for _, qc_row in segment_data.iterrows():
+    minimum = qc_row["expected_length_min"]
+    maximum = qc_row["expected_length_max"]
+    if pd.notna(minimum) and pd.notna(maximum):
+        expected_text = f"{int(minimum):,}–{int(maximum):,} nt"
+    else:
+        expected_text = "Not configured"
+    length_rows.append({
+        "Segment": str(qc_row["segment"]),
+        "Length QC bounds": expected_text,
+    })
 length_df = pd.DataFrame(length_rows)
 
 provenance_html = (
@@ -1001,13 +1082,12 @@ interpretation = []
 
 if int(row["segments_pass"]) == 8:
     interpretation.append(
-        "All eight influenza A segments passed the "
-        "configured coverage threshold."
+        "All eight influenza A segments passed the configured segment QC criteria."
     )
 else:
     interpretation.append(
         f'{int(row["segments_pass"])} of 8 influenza A '
-        "segments passed the configured coverage threshold."
+        "segments passed the configured segment QC criteria."
     )
 
 if row["h5n1_screen"] == "PASS":
