@@ -8,7 +8,7 @@
 
 WINGS is a portable Snakemake workflow for genomic analysis of avian influenza A virus from Oxford Nanopore sequencing reads. It performs read preprocessing, influenza assembly, segment-level quality assessment, consensus polishing, variant calling, subtype screening, genotype assignment, annotation, and generation of interactive HTML reports.
 
-WINGS was developed in support of the **Pandemic ESCAPE Center**, with a focus on genomic epidemiology, bioinformatics, and surveillance of avian influenza viruses in wild birds.
+WINGS was developed in support of the [**Pandemic ESCAPE Center**](https://escape.engr.uky.edu/), with a focus on genomic epidemiology, bioinformatics, and surveillance of avian influenza viruses in wild birds.
 
 The workflow has been validated on:
 
