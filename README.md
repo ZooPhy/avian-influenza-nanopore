@@ -63,6 +63,8 @@ Segment-level QC
 (default: median depth >=50x; >=95% of positions at >=50x;
  minimum segment length; <=1% Ns; long segments warned)
     |
+    +--> FASTQ basecaller-model detection
+    |    (sample-specific Medaka model resolution)
     +--> Medaka consensus polishing
     +--> Medaka variant calling
     |
@@ -114,6 +116,7 @@ NanoPlot is also available as an optional raw-read quality-control target.
 │   ├── check_coverage.py
 │   ├── coverage_table.py
 │   ├── normalize_irma_outputs.py
+│   ├── resolve_medaka_model.py
 │   ├── validate_metadata.py
 │   ├── extract_sample_metadata.py
 │   ├── serve_reports.py
@@ -483,7 +486,24 @@ Use `irma_runtime: "singularity"` instead when Singularity is installed rather t
 
 ### Medaka model
 
-The Medaka model should match the Nanopore chemistry and basecalling model used to generate the reads. Leaving `medaka_model` unset preserves the current pipeline behavior, but specifying the correct model is recommended for reproducibility.
+WINGS automatically determines the Medaka consensus model for each sample from the `basecall_model_version_id` metadata embedded in the original Oxford Nanopore FASTQ headers. The workflow inspects multiple FASTQ records, verifies that the detected basecaller model is consistent, and writes the result to `results/<sample>/medaka/model.tsv`.
+
+The detected basecaller model is passed to Medaka using its `:consensus` model selector, allowing the installed Medaka version to resolve the corresponding supported consensus model. This avoids relying on automatic model detection from the normalized IRMA BAM, which may not retain the original Nanopore read-group metadata.
+
+For example:
+
+```text
+FASTQ basecaller model:
+dna_r10.4.1_e8.2_400bps_hac@v5.0.0
+
+Medaka selector:
+dna_r10.4.1_e8.2_400bps_hac@v5.0.0:consensus
+
+Resolved Medaka model:
+r1041_e82_400bps_hac_v5.0.0
+```
+
+`medaka_model` remains available as an expert configuration override. With `medaka_model: null`, WINGS uses automatic FASTQ-based model resolution. The number of FASTQ records inspected can be configured with `medaka_model_records` (default: 100).
 
 ## Running on an Apple Silicon laptop
 
@@ -625,6 +645,7 @@ results/<sample>/irma/manifest.tsv
 results/<sample>/irma/segments/<segment>/consensus.fasta
 results/<sample>/coverage/coverage.tsv
 results/<sample>/coverage_stats/<segment>.tsv
+results/<sample>/medaka/model.tsv
 results/<sample>/medaka/<segment>/consensus.fasta
 results/<sample>/medaka/<segment>/variants.vcf
 results/<sample>/blast/<segment>.blast.txt
@@ -968,7 +989,8 @@ Rerun the environment creation or complete workflow command.
 - `fastplong` performs long-read quality and length filtering with its adapter-trimming step disabled to avoid a second adapter-trimming pass after Porechop ABI.
 - Segment depth is calculated with `samtools depth -aa -q 0 -Q 0`; breadth is the fraction of all reference positions meeting the configured depth threshold.
 - Sample metadata are validated before report generation and propagated into sample-specific metadata outputs.
-- Segment QC requires the configured depth, breadth-at-depth, expected-length, and N-content criteria; by default this is median depth >=50x, >=95% of positions at >=50x, the configured segment-specific length range, and <=1% Ns.
+- The Oxford Nanopore basecaller model is detected from the original FASTQ metadata for each sample, and the resulting Medaka selector is recorded in `results/<sample>/medaka/model.tsv`.
+- Segment QC requires the configured depth, breadth-at-depth, minimum-length, and N-content criteria; by default this is median depth >=50x, >=95% of positions at >=50x, the configured segment-specific minimum length, and <=1% Ns. Consensus lengths above the configured upper guide generate a warning rather than a hard failure.
 - Rule-specific Conda environments are stored under `.snakemake/conda/`.
 - IRMA runs in Docker on macOS and in Apptainer or Singularity on the ARM64 cluster.
 - The BLAST reference archive, generated database, input reads, results, local configuration, and Snakemake working files should not be committed to Git.

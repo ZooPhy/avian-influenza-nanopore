@@ -31,6 +31,36 @@ library(htmltools)
 library(knitr)
 library(gt)
 
+find_wings_logo <- function() {
+  current <- normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+
+  repeat {
+    candidate <- file.path(current, "wings_logo.jpg")
+    if (file.exists(candidate) && file.info(candidate)$size > 0) {
+      return(candidate)
+    }
+
+    parent <- dirname(current)
+    if (identical(parent, current)) {
+      break
+    }
+    current <- parent
+  }
+
+  NULL
+}
+
+wings_logo_path <- find_wings_logo()
+if (!is.null(wings_logo_path)) {
+  wings_logo_uri <- knitr::image_uri(wings_logo_path)
+  wings_logo_html <- sprintf(
+    '<img src="%s" alt="WINGS logo">',
+    htmltools::htmlEscape(wings_logo_uri, attribute = TRUE)
+  )
+} else {
+  wings_logo_html <- '<div class="report-brand-logo-fallback" aria-label="WINGS">W</div>'
+}
+
 coverage_threshold <- as.numeric(params$coverage_threshold)
 coverage_breadth_threshold <- as.numeric(params$coverage_breadth_threshold)
 max_n_fraction <- as.numeric(params$max_n_fraction)
@@ -277,12 +307,11 @@ metadata <- tibble(
 )
 ```
 
-```{=html}
-<div class="report-header">
-  <div class="report-brand-mark" aria-hidden="true">
-    <span></span>
-    <span></span>
-    <span></span>
+```{r}
+header_html <- sprintf(
+  '<div class="report-header">
+  <div class="report-brand-logo">
+    %s
   </div>
 
   <div class="report-title-group">
@@ -299,6 +328,11 @@ metadata <- tibble(
     Local analysis
   </div>
 </div>
+',
+  wings_logo_html
+)
+
+htmltools::HTML(header_html)
 ```
 
 ## Overview

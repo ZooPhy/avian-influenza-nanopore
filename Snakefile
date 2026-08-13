@@ -135,9 +135,12 @@ FASTPLONG_MEAN_QUAL = int(config.get("fastplong_mean_quality", 10))
 FASTPLONG_MIN_LENGTH = int(config.get("fastplong_min_length", 500))
 
 MEDAKA_MODEL = config.get("medaka_model")
-MEDAKA_MODEL_ARG = (
-    f"--model {shlex.quote(str(MEDAKA_MODEL))}" if MEDAKA_MODEL else ""
-)
+if MEDAKA_MODEL is not None:
+    MEDAKA_MODEL = str(MEDAKA_MODEL).strip() or None
+
+MEDAKA_MODEL_RECORDS = int(config.get("medaka_model_records", 100))
+if MEDAKA_MODEL_RECORDS < 1:
+    raise ValueError("medaka_model_records must be at least 1")
 MEDAKA_FAIL_SOFT = as_bool(config.get("medaka_fail_soft", True))
 
 NANOPLOT_INSTALL_CHROME = as_bool(
@@ -769,13 +772,35 @@ rule coverage_table:
 
 
 # -----------------------------------------------------------------------------
+# Resolve Medaka model from original FASTQ metadata
+# -----------------------------------------------------------------------------
+rule resolve_medaka_model:
+    input:
+        fastq=lambda wildcards: SAMPLE_FASTQ[wildcards.sample]
+    output:
+        model=f"{RESULTS}/{{sample}}/medaka/model.tsv"
+    params:
+        max_records=MEDAKA_MODEL_RECORDS
+    shell:
+        r"""
+        set -euo pipefail
+
+        python scripts/resolve_medaka_model.py \
+            --fastq {input.fastq:q} \
+            --output {output.model:q} \
+            --max-records {params.max_records}
+        """
+
+
+# -----------------------------------------------------------------------------
 # Medaka inference
 # -----------------------------------------------------------------------------
 rule medaka_inference:
     input:
         bam=bam_path,
         fasta=fasta_path,
-        flag=f"{RESULTS}/{{sample}}/coverage_flags/{{segment}}.flag"
+        flag=f"{RESULTS}/{{sample}}/coverage_flags/{{segment}}.flag",
+        model=f"{RESULTS}/{{sample}}/medaka/model.tsv"
     output:
         features=f"{RESULTS}/{{sample}}/medaka/{{segment}}/features.hdf"
     log:
@@ -788,17 +813,35 @@ rule medaka_inference:
         mem_mb=int(config.get("medaka_inference_mem_mb", 16000)),
         time_min=int(config.get("medaka_inference_time_min", 240))
     params:
-        model_arg=MEDAKA_MODEL_ARG,
+        model_override=MEDAKA_MODEL or "",
+        use_override="true" if MEDAKA_MODEL else "false",
         fail_soft="true" if MEDAKA_FAIL_SOFT else "false"
     shell:
         r"""
         set -euo pipefail
         mkdir -p "$(dirname {output.features:q})"
 
+        if [[ {params.use_override:q} == "true" ]]; then
+            model={params.model_override:q}
+            model_source="config override"
+        else
+            model="$(awk -F '\t' 'NR == 2 {{print $3}}' {input.model:q})"
+            model_source="FASTQ metadata"
+        fi
+
+        if [[ -z "$model" ]]; then
+            echo "Could not resolve Medaka consensus model from {input.model:q}." > {log:q}
+            exit 1
+        fi
+
+        echo "Medaka consensus selector: $model" > {log:q}
+        echo "Medaka model source: $model_source" >> {log:q}
+
         if grep -q '^PASS$' {input.flag:q}; then
             if medaka inference {input.bam:q} {output.features:q} \
-                --threads {threads} {params.model_arg} \
-                > {log:q} 2>&1; then
+                --threads {threads} \
+                --model "$model" \
+                >> {log:q} 2>&1; then
                 [[ -e {output.features:q} ]] || : > {output.features:q}
             elif [[ {params.fail_soft:q} == "true" ]]; then
                 echo "Medaka inference failed; creating an empty features file because medaka_fail_soft=true." >> {log:q}
@@ -808,7 +851,7 @@ rule medaka_inference:
                 exit 1
             fi
         else
-            echo "Segment did not pass segment QC; Medaka inference skipped." > {log:q}
+            echo "Segment did not pass segment QC; Medaka inference skipped." >> {log:q}
             : > {output.features:q}
         fi
         """

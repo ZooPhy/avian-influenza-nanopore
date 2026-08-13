@@ -112,13 +112,32 @@ segment_class = (
 )
 
 reads_after = int(row["reads_after"])
+
+
+def find_wings_logo():
+    """Locate the WINGS logo from the repository or current render directory."""
+    cwd = Path.cwd().resolve()
+    for base in (cwd, *cwd.parents):
+        candidate = base / "wings_logo.jpg"
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+wings_logo_path = find_wings_logo()
+if wings_logo_path is not None:
+    wings_logo_uri = file_data_uri(wings_logo_path, "image/jpeg")
+    wings_logo_html = f'<img src="{wings_logo_uri}" alt="WINGS logo">'
+else:
+    # Avoid a broken-image icon if the logo is unexpectedly unavailable.
+    wings_logo_html = '<div class="report-brand-logo-fallback" aria-label="WINGS">W</div>'
 ```
 
 ```{python}
 header_html = f"""
 <div class="report-header">
   <div class="report-brand-logo">
-    <img src="wings_logo.jpg" alt="WINGS logo">
+    {wings_logo_html}
   </div>
 
   <div class="report-title-group">
@@ -336,11 +355,7 @@ def derive_length_status(record):
     minimum, maximum, length = record["expected_length_min"], record["expected_length_max"], record["length"]
     if pd.isna(minimum) or pd.isna(maximum):
         return "REVIEW"
-    if float(length) < float(minimum):
-        return "FAIL"
-    if float(length) > float(maximum):
-        return "WARNING"
-    return "PASS"
+    return "PASS" if float(minimum) <= float(length) <= float(maximum) else "FAIL"
 
 if "length_status" not in segment_data.columns:
     segment_data["length_status"] = segment_data.apply(derive_length_status, axis=1)
@@ -362,12 +377,10 @@ else:
     segment_data.loc[missing, "n_content_status"] = segment_data.loc[missing].apply(derive_n_content_status, axis=1)
 
 def derive_overall_status(record):
-    coverage = record["coverage_status"]
-    length = record["length_status"]
-    n_content = record["n_content_status"]
-    if coverage == "PASS" and length in {"PASS", "WARNING"} and n_content == "PASS":
+    statuses = [record["coverage_status"], record["length_status"], record["n_content_status"]]
+    if all(status == "PASS" for status in statuses):
         return "PASS"
-    if any(status in {"MISSING", "ERROR", "REVIEW"} for status in [coverage, length, n_content]):
+    if any(status in {"MISSING", "ERROR", "REVIEW"} for status in statuses):
         return "REVIEW"
     return "FAIL"
 
@@ -1041,7 +1054,7 @@ for _, qc_row in segment_data.iterrows():
         expected_text = "Not configured"
     length_rows.append({
         "Segment": str(qc_row["segment"]),
-        "Length QC bounds": expected_text,
+        "Expected complete length": expected_text,
     })
 length_df = pd.DataFrame(length_rows)
 
