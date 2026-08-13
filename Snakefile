@@ -1282,8 +1282,10 @@ rule concat_consensus:
 # H5N1 screen
 #
 # This is an IRMA-supported H5/N1 screening criterion, not an independent
-# definitive subtype call. It requires normalized HA and NA contigs identified
-# as H5 and N1 and both to pass the configured segment QC.
+# definitive subtype call. It reports DETECTED only when QC-passing HA and NA
+# are identified as H5 and N1, NOT_DETECTED when QC-passing HA/NA evidence is
+# informative but does not meet that criterion, and INDETERMINATE when HA or NA
+# lacks sufficient QC-qualified evidence for a biological negative.
 # -----------------------------------------------------------------------------
 rule detect_h5n1:
     input:
@@ -1324,14 +1326,32 @@ rule detect_h5n1:
 
         is_h5 = ha_contig.startswith("A_HA_H5")
         is_n1 = na_contig.startswith("A_NA_N1")
-        passed = ha_status == "PASS" and na_status == "PASS" and is_h5 and is_n1
+        ha_informative = ha_status == "PASS" and ha_contig not in {"", "NA", "MISSING"}
+        na_informative = na_status == "PASS" and na_contig not in {"", "NA", "MISSING"}
+
+        if not ha_informative or not na_informative:
+            screen_status = "INDETERMINATE"
+            reasons = []
+            if not ha_informative:
+                reasons.append(f"HA_not_informative(status={ha_status},contig={ha_contig})")
+            if not na_informative:
+                reasons.append(f"NA_not_informative(status={na_status},contig={na_contig})")
+            screen_reason = ";".join(reasons)
+        elif is_h5 and is_n1:
+            screen_status = "DETECTED"
+            screen_reason = "QC-passing H5-associated HA and N1-associated NA detected"
+        else:
+            screen_status = "NOT_DETECTED"
+            screen_reason = (
+                "QC-passing HA and NA were informative but did not jointly meet the H5N1 screening criterion"
+            )
 
         output_path = Path(str(output.flag))
         log_path = Path(str(log[0]))
         output_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        output_path.write_text("PASS\n" if passed else "FAIL\n")
+        output_path.write_text(f"{screen_status}\n")
         log_path.write_text(
             f"sample={wildcards.sample}\n"
             f"segment_qc_depth_threshold={params.threshold}\n"
@@ -1339,9 +1359,12 @@ rule detect_h5n1:
             f"segment_qc_max_n_fraction={params.max_n_fraction}\n"
             f"HA_status={ha_status}\n"
             f"HA_selected_contig={ha_contig}\n"
+            f"HA_informative={ha_informative}\n"
             f"NA_status={na_status}\n"
             f"NA_selected_contig={na_contig}\n"
-            f"H5N1_screen={'PASS' if passed else 'FAIL'}\n"
+            f"NA_informative={na_informative}\n"
+            f"H5N1_screen={screen_status}\n"
+            f"H5N1_reason={screen_reason}\n"
         )
 
 
@@ -1566,16 +1589,24 @@ rule genoflu:
         set -euo pipefail
         mkdir -p "$(dirname {output.tsv:q})"
 
-        if grep -q '^PASS$' {input.flag:q}; then
+        h5n1_status="$(tr -d '\r\n' < {input.flag:q})"
+
+        if [[ "$h5n1_status" == "DETECTED" ]]; then
             fasta_dir="$(dirname {input.fasta:q})"
             fasta_base="$(basename {input.fasta:q})"
             (
                 cd "$fasta_dir"
                 genoflu.py -f "$fasta_base"
             ) | tee {log:q} > {output.tsv:q}
-        else
-            printf "sample\tstatus\n%s\tnot H5N1\n" {wildcards.sample:q} \
+        elif [[ "$h5n1_status" == "NOT_DETECTED" ]]; then
+            printf "sample\tstatus\n%s\tH5N1_NOT_DETECTED\n" {wildcards.sample:q} \
               | tee {log:q} > {output.tsv:q}
+        elif [[ "$h5n1_status" == "INDETERMINATE" ]]; then
+            printf "sample\tstatus\n%s\tH5N1_INDETERMINATE\n" {wildcards.sample:q} \
+              | tee {log:q} > {output.tsv:q}
+        else
+            echo "Unexpected H5N1 screen status: '$h5n1_status'" > {log:q}
+            exit 1
         fi
         """
 # -----------------------------------------------------------------------------

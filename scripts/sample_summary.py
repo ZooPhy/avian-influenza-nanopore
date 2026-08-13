@@ -12,7 +12,6 @@ def read_fastplong_json(path: Path) -> dict:
     summary = data.get("summary", {})
     before = summary.get("before_filtering", {})
     after = summary.get("after_filtering", {})
-
     filtering = data.get("filtering_result", {})
     adapter_cutting = data.get("adapter_cutting", {})
 
@@ -28,10 +27,7 @@ def read_fastplong_json(path: Path) -> dict:
         "reads_passed": filtering.get("passed_filter_reads", "NA"),
         "reads_low_quality": filtering.get("low_quality_reads", "NA"),
         "reads_too_short": filtering.get("too_short_reads", "NA"),
-        "reads_with_adapters": adapter_cutting.get(
-            "adapter_trimmed_reads",
-            "NA",
-        ),
+        "reads_with_adapters": adapter_cutting.get("adapter_trimmed_reads", "NA"),
     }
 
 
@@ -51,7 +47,13 @@ def read_blast(path: Path) -> dict[str, str]:
 def read_h5n1_flag(path: Path) -> str:
     if not path.exists():
         return "MISSING"
-    return path.read_text().strip() or "MISSING"
+    status = path.read_text().strip().upper() or "MISSING"
+    # Backward compatibility for reports generated from older WINGS outputs.
+    if status == "PASS":
+        return "DETECTED"
+    if status == "FAIL":
+        return "INDETERMINATE"
+    return status
 
 
 def read_genoflu(path: Path) -> str:
@@ -109,21 +111,21 @@ def write_summary(
 
     ha_contig = ha_rows[0].get("contig", "NA") if ha_rows else "NA"
     na_contig = na_rows[0].get("contig", "NA") if na_rows else "NA"
-
-    ha_median_depth = (
-        ha_rows[0].get("median_depth", "NA") if ha_rows else "NA"
-    )
-    na_median_depth = (
-        na_rows[0].get("median_depth", "NA") if na_rows else "NA"
-    )
+    ha_median_depth = ha_rows[0].get("median_depth", "NA") if ha_rows else "NA"
+    na_median_depth = na_rows[0].get("median_depth", "NA") if na_rows else "NA"
 
     review_flags = []
 
     if len(pass_segments) < 8:
         review_flags.append("fewer_than_8_pass_segments")
 
-    if h5n1_status != "PASS":
-        review_flags.append("h5n1_screen_not_pass")
+    # A valid NOT_DETECTED screen is not itself a QC problem. DETECTED warrants
+    # attention as a surveillance finding, while INDETERMINATE warrants review
+    # because a biological negative cannot be supported from the available HA/NA QC.
+    if h5n1_status == "DETECTED":
+        review_flags.append("h5n1_screen_detected")
+    elif h5n1_status != "NOT_DETECTED":
+        review_flags.append("h5n1_screen_indeterminate")
 
     if failed_segments:
         review_flags.append("coverage_failures")
@@ -189,24 +191,12 @@ def write_summary(
 def main() -> None:
     sample = snakemake.wildcards.sample
 
-    fastplong = read_fastplong_json(
-        Path(snakemake.input.fastplong)
-    )
-    coverage_rows = read_coverage(
-        Path(snakemake.input.coverage)
-    )
-    blast_hits = read_blast(
-        Path(snakemake.input.blast)
-    )
-    h5n1_status = read_h5n1_flag(
-        Path(snakemake.input.h5n1)
-    )
-    genoflu_status = read_genoflu(
-        Path(snakemake.input.genoflu)
-    )
-    consensus_segments = count_fasta_records(
-        Path(snakemake.input.consensus)
-    )
+    fastplong = read_fastplong_json(Path(snakemake.input.fastplong))
+    coverage_rows = read_coverage(Path(snakemake.input.coverage))
+    blast_hits = read_blast(Path(snakemake.input.blast))
+    h5n1_status = read_h5n1_flag(Path(snakemake.input.h5n1))
+    genoflu_status = read_genoflu(Path(snakemake.input.genoflu))
+    consensus_segments = count_fasta_records(Path(snakemake.input.consensus))
 
     write_summary(
         output_path=Path(snakemake.output.tsv),

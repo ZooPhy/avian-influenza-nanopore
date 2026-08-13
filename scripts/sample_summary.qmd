@@ -160,9 +160,27 @@ if medaka_review_notes:
         review_text = review_text + "; " + "; ".join(medaka_review_notes)
     review_status = "status-warning"
 
-h5n1_status = str(row["h5n1_screen"]).upper()
-h5n1_badge = "PASS" if h5n1_status == "PASS" else "WARNING"
-h5n1_class = "status-pass" if h5n1_badge == "PASS" else "status-warning"
+h5n1_status = str(row["h5n1_screen"]).strip().upper()
+# Backward-compatible display for older reports. A legacy FAIL is treated as
+# indeterminate because the old binary screen did not distinguish QC failure
+# from a true negative.
+if h5n1_status == "PASS":
+    h5n1_status = "DETECTED"
+elif h5n1_status == "FAIL":
+    h5n1_status = "INDETERMINATE"
+
+if h5n1_status == "DETECTED":
+    h5n1_badge = "DETECTED"
+    h5n1_class = "status-warning"
+    h5n1_detail = "QC-qualified H5 and N1 screening criterion met"
+elif h5n1_status == "NOT_DETECTED":
+    h5n1_badge = "NOT DETECTED"
+    h5n1_class = "status-pass"
+    h5n1_detail = "QC-qualified HA/NA evidence does not meet the H5N1 criterion"
+else:
+    h5n1_badge = "INDETERMINATE"
+    h5n1_class = "status-warning"
+    h5n1_detail = "Insufficient QC-qualified HA/NA evidence for a biological negative"
 
 segments_pass = int(row["segments_pass"])
 segment_class = (
@@ -224,7 +242,7 @@ header_html = f"""
       </span>
     </div>
     <div class="metric-detail">
-      IRMA-supported screening result
+      {h5n1_detail}
     </div>
   </div>
 
@@ -288,7 +306,7 @@ overview = pd.DataFrame(
                 f"{len(medaka_fallback_segments)} IRMA fallback"
                 if medaka_status_recorded else "Not recorded"
             ),
-            row["h5n1_screen"],
+            h5n1_status,
             row["genoflu_status"],
             review_text,
         ],
@@ -506,7 +524,7 @@ subtype_table = pd.DataFrame(
             display_unknown(row["na_contig"]),
             row["ha_median_depth"],
             row["na_median_depth"],
-            row["h5n1_screen"],
+            h5n1_status,
         ],
     }
 )
@@ -591,6 +609,20 @@ def parse_genoflu_report(path):
     text = path.read_text(encoding="utf-8", errors="replace")
     result["raw_text"] = text
 
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) == 2 and lines[0].startswith("sample\tstatus"):
+        gate_status = lines[1].split("\t", 1)[-1].strip()
+        if gate_status == "H5N1_NOT_DETECTED":
+            result["status"] = "Not run"
+            result["reason"] = "GenoFLU was not run because the H5N1 screen was NOT_DETECTED."
+        elif gate_status == "H5N1_INDETERMINATE":
+            result["status"] = "Not run"
+            result["reason"] = "GenoFLU was not run because the H5N1 screen was INDETERMINATE."
+        else:
+            result["status"] = gate_status
+            result["reason"] = "GenoFLU was gated by the H5N1 screening result."
+        return result
+
     threshold_match = re.search(r"pident_threshold:\s*([0-9.]+)", text)
     if threshold_match:
         result["threshold"] = float(threshold_match.group(1))
@@ -652,7 +684,7 @@ calls_df = pd.DataFrame(call_rows)
 status_text = str(genoflu["status"])
 status_class = (
     "download-status-pass"
-    if status_text.lower() not in {"not assigned", "not available"}
+    if status_text.lower() not in {"not assigned", "not available", "not run"}
     else "download-status-review"
 )
 
@@ -687,7 +719,10 @@ if threshold is not None:
     summary_bits.append(f"identity threshold: {threshold:g}%")
 summary_line = " · ".join(summary_bits)
 
-if status_text.lower() == "not assigned":
+if status_text.lower() == "not run":
+    result_text = str(genoflu["reason"])
+    interpretation_text = "GenoFLU gating follows the three-state H5N1 screen; no genotype call is implied."
+elif status_text.lower() == "not assigned":
     submitted_count = input_count if input_count is not None else len(genoflu["calls"])
     matched_count = matched if matched is not None else len(genoflu["calls"])
     threshold_phrase = f" at ≥{threshold:g}% identity" if threshold is not None else ""
