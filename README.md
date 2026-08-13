@@ -804,7 +804,7 @@ The per-segment statistics record the individual `coverage_status`, `length_stat
 
 Only segments passing the hard segment-QC criteria proceed through Medaka and BLAST analysis; an upper-length warning alone does not block downstream analysis.
 
-For subtype-specific HA and NA outputs, the workflow selects the relevant IRMA coverage table deterministically and records the selected table and reason in the segment QC statistics.
+For each segment, WINGS selects a normalized IRMA candidate deterministically and records the candidate count, selection status, selected contig, and selection reason in the manifest and segment QC outputs. When IRMA produces more than one candidate for a segment, the selected candidate remains eligible for the normal hard QC gate, but the sample receives a `multiple_irma_candidates` review flag and the ambiguity is surfaced in sample- and run-level reports.
 
 ## H5N1 screening
 
@@ -815,9 +815,7 @@ The H5N1 rule is a screening criterion based on IRMA-supported HA and NA assignm
 - passing HA segment QC
 - passing NA segment QC
 
-A `PASS` result should be interpreted as an analytical screening flag rather than an independent confirmatory subtype test.
-
-When the H5N1 screen does not pass, the GenoFLU output contains a status indicating that the sample was not classified as H5N1 by this screening criterion.
+The H5N1 screen uses three states: `DETECTED` when QC-qualified HA and NA evidence supports H5 and N1; `NOT_DETECTED` when QC-qualified informative HA/NA evidence does not meet the H5+N1 criterion; and `INDETERMINATE` when HA or NA evidence is missing or does not pass segment QC. `DETECTED` is an analytical screening flag rather than an independent confirmatory subtype test. GenoFLU is run only for `DETECTED` samples.
 
 ## Troubleshooting
 

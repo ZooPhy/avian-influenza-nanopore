@@ -161,6 +161,16 @@ if (!"h5n1_screen" %in% names(summary)) {
   summary$h5n1_screen <- h5n1_values
 }
 
+# Normalize IRMA candidate-ambiguity fields across sample-summary versions.
+if (!"multiple_irma_candidate_count" %in% names(summary)) {
+  summary$multiple_irma_candidate_count <- 0
+}
+summary$multiple_irma_candidate_count <- suppressWarnings(as.numeric(summary$multiple_irma_candidate_count))
+summary$multiple_irma_candidate_count <- coalesce(summary$multiple_irma_candidate_count, 0)
+if (!"multiple_irma_candidate_segments" %in% names(summary)) {
+  summary$multiple_irma_candidate_segments <- "NONE"
+}
+
 # Retain a normalized detected-segment count when available.
 if (!"coverage_segments" %in% names(summary)) {
   if ("segments_detected" %in% names(summary)) {
@@ -827,6 +837,32 @@ sample_table |>
     heading.title.font.size = px(18)
   )
 ```
+
+## IRMA Candidate Ambiguity
+
+Multiple IRMA candidates are treated as a **review condition rather than a hard segment-QC failure**. WINGS keeps the deterministic candidate selected by its ranking logic while preserving the ambiguity in the sample summary.
+
+```{r}
+irma_ambiguity <- summary |>
+  filter(multiple_irma_candidate_count > 0) |>
+  select(sample_id, host, multiple_irma_candidate_count, multiple_irma_candidate_segments, review_reason)
+
+if (nrow(irma_ambiguity) == 0) {
+  cat("No samples contain segments with multiple IRMA candidates.")
+} else {
+  irma_ambiguity |>
+    gt() |>
+    cols_label(
+      sample_id = "Sample",
+      host = "Host",
+      multiple_irma_candidate_count = "Segments with >1 candidate",
+      multiple_irma_candidate_segments = "Affected segments",
+      review_reason = "Review reason"
+    ) |>
+    tab_options(table.width = pct(100), table.font.size = px(13))
+}
+```
+
 
 ## QC-qualified Genome Completeness
 

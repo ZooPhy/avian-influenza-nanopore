@@ -83,6 +83,7 @@ def write_outputs(
     maximum: str = "NA",
     breadth: str = "NA",
     candidate_count: int = 0,
+    selection_status: str = "MISSING",
     reason: str = "",
 ) -> None:
     flag_out.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +113,7 @@ def write_outputs(
         "n_content_status",
         "status",
         "n_candidates",
+        "selection_status",
         "selection_reason",
     ]
     row = {
@@ -138,6 +140,7 @@ def write_outputs(
         "n_content_status": n_content_status,
         "status": status,
         "n_candidates": candidate_count,
+        "selection_status": selection_status,
         "selection_reason": reason,
     }
     with stats_out.open("w", newline="", encoding="utf-8") as handle:
@@ -232,6 +235,10 @@ def main() -> None:
     manifest_status = manifest_row.get("status", "MISSING")
     contig = manifest_row.get("contig") or "NA"
     candidate_count = int(manifest_row.get("candidate_count") or 0)
+    selection_status = (
+        manifest_row.get("selection_status")
+        or ("MULTIPLE_CANDIDATES" if candidate_count > 1 else "UNIQUE" if candidate_count == 1 else "MISSING")
+    )
     bam_path = segments_dir / segment / "alignment.bam"
 
     common = dict(
@@ -243,6 +250,7 @@ def main() -> None:
         max_n_fraction=max_n_fraction,
         contig=contig,
         candidate_count=candidate_count,
+        selection_status=selection_status,
     )
 
     if (

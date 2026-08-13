@@ -114,6 +114,19 @@ def write_summary(
     ha_median_depth = ha_rows[0].get("median_depth", "NA") if ha_rows else "NA"
     na_median_depth = na_rows[0].get("median_depth", "NA") if na_rows else "NA"
 
+
+    multiple_candidate_rows = []
+    for row in coverage_rows:
+        try:
+            candidate_count = int(row.get("candidate_count") or 0)
+        except (TypeError, ValueError):
+            candidate_count = 0
+        if candidate_count > 1:
+            multiple_candidate_rows.append((row.get("segment", "NA"), candidate_count))
+
+    multiple_candidate_segments = [segment for segment, _ in multiple_candidate_rows]
+    max_irma_candidate_count = max((count for _, count in multiple_candidate_rows), default=1)
+
     review_flags = []
 
     if len(pass_segments) < 8:
@@ -132,6 +145,9 @@ def write_summary(
 
     if consensus_segments == 0:
         review_flags.append("no_consensus_segments")
+
+    if multiple_candidate_segments:
+        review_flags.append("multiple_irma_candidates")
 
     fieldnames = [
         "sample",
@@ -158,6 +174,9 @@ def write_summary(
         "h5n1_screen",
         "genoflu_status",
         "consensus_segments",
+        "multiple_irma_candidate_segments",
+        "multiple_irma_candidate_count",
+        "max_irma_candidate_count",
         "review_flags",
         "ha_top_blast_hit",
         "na_top_blast_hit",
@@ -177,6 +196,9 @@ def write_summary(
         "h5n1_screen": h5n1_status,
         "genoflu_status": genoflu_status,
         "consensus_segments": consensus_segments,
+        "multiple_irma_candidate_segments": ",".join(multiple_candidate_segments) or "NONE",
+        "multiple_irma_candidate_count": len(multiple_candidate_segments),
+        "max_irma_candidate_count": max_irma_candidate_count,
         "review_flags": ";".join(review_flags) or "NONE",
         "ha_top_blast_hit": blast_hits.get("HA", "NO_HIT"),
         "na_top_blast_hit": blast_hits.get("NA", "NO_HIT"),

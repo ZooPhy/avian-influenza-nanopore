@@ -192,12 +192,12 @@ SEGMENT_SEQUENCE = ("HA", "NA", "PB2", "PB1", "PA", "NP", "MP", "NS")
 
 def irma_segments_dir(wildcards):
     """Return the normalized segment directory after the IRMA checkpoint."""
-    return str(checkpoints.irma.get(sample=wildcards.sample).output.segments)
+    return str(checkpoints.normalize_irma_outputs.get(sample=wildcards.sample).output.segments)
 
 
 def irma_manifest_path(wildcards):
     """Return the normalized IRMA manifest after the checkpoint."""
-    return str(checkpoints.irma.get(sample=wildcards.sample).output.manifest)
+    return str(checkpoints.normalize_irma_outputs.get(sample=wildcards.sample).output.manifest)
 
 
 def _manifest_rows(wildcards):
@@ -481,18 +481,13 @@ rule seqtk_rename:
 #   docker      -> require Docker
 #   local       -> require IRMA on PATH
 # -----------------------------------------------------------------------------
-checkpoint irma:
+rule irma:
     input:
-        renamed=f"{RESULTS}/{{sample}}/fastplong/filtered_renamed.fastq.gz",
-        normalizer="scripts/normalize_irma_outputs.py"
+        renamed=f"{RESULTS}/{{sample}}/fastplong/filtered_renamed.fastq.gz"
     output:
-        project=directory(f"{RESULTS}/{{sample}}/irma/project"),
-        segments=directory(f"{RESULTS}/{{sample}}/irma/segments"),
-        manifest=f"{RESULTS}/{{sample}}/irma/manifest.tsv"
+        project=directory(f"{RESULTS}/{{sample}}/irma/project")
     log:
         f"{RESULTS}/{{sample}}/irma/irma.log"
-    conda:
-        "envs/pysam.yaml"
     threads:
         IRMA_THREADS
     params:
@@ -501,23 +496,14 @@ checkpoint irma:
         runtime=IRMA_RUNTIME
     run:
         input_path = Path(str(input.renamed)).resolve()
-        normalizer_path = Path(str(input.normalizer)).resolve()
         project_path = Path(str(output.project)).resolve()
-        segments_path = Path(str(output.segments)).resolve()
-        manifest_path = Path(str(output.manifest)).resolve()
         log_path = Path(str(log[0])).resolve()
 
         project_path.parent.mkdir(parents=True, exist_ok=True)
-        segments_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         if project_path.exists():
             shutil.rmtree(project_path)
-        if segments_path.exists():
-            shutil.rmtree(segments_path)
-        if manifest_path.exists():
-            manifest_path.unlink()
 
         runtime = str(params.runtime).lower()
         allowed = {"auto", "apptainer", "singularity", "docker", "local"}
@@ -592,14 +578,9 @@ checkpoint irma:
                 str(project_path),
             ]
 
-        def remove_partial_irma_outputs():
-            """Remove partial checkpoint outputs before reporting a failed IRMA run."""
+        def remove_partial_project():
             if project_path.exists():
                 shutil.rmtree(project_path, ignore_errors=True)
-            if segments_path.exists():
-                shutil.rmtree(segments_path, ignore_errors=True)
-            if manifest_path.exists():
-                manifest_path.unlink()
 
         with log_path.open("w") as log_handle:
             log_handle.write(f"IRMA runtime: {runtime}\n")
@@ -618,7 +599,7 @@ checkpoint irma:
                     f"IRMA_RETURN_CODE={exc.returncode}\n"
                 )
                 log_handle.flush()
-                remove_partial_irma_outputs()
+                remove_partial_project()
                 raise RuntimeError(
                     f"IRMA failed for sample {wildcards.sample} with return code "
                     f"{exc.returncode}. See {log_path}."
@@ -626,7 +607,7 @@ checkpoint irma:
 
         # IRMA can occasionally return exit code 0 even when an internal process
         # was killed or no QC-passing reads were available. Treat those messages
-        # as execution failures so that infrastructure problems cannot be reported
+        # as execution failures so infrastructure problems cannot be reported
         # downstream as biological negatives.
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
         fatal_patterns = {
@@ -645,11 +626,61 @@ checkpoint irma:
                     "\nESCAPE_STATUS=IRMA_INTERNAL_FAILURE\n"
                     "ESCAPE_FAILURE_REASONS=" + ", ".join(fatal_matches) + "\n"
                 )
-            remove_partial_irma_outputs()
+            remove_partial_project()
             raise RuntimeError(
                 f"IRMA reported an internal failure for sample {wildcards.sample}: "
                 f"{', '.join(fatal_matches)}. See {log_path}."
             )
+
+        if not project_path.is_dir():
+            raise RuntimeError(
+                f"IRMA did not create the expected project directory for "
+                f"sample {wildcards.sample}. See {log_path}."
+            )
+
+        with log_path.open("a") as log_handle:
+            log_handle.write("\nESCAPE_STATUS=IRMA_COMPLETED\n")
+
+
+# -----------------------------------------------------------------------------
+# Normalize IRMA outputs
+#
+# This is intentionally a checkpoint separate from the expensive IRMA assembly.
+# Changes to normalization or candidate-selection logic therefore rerun only
+# normalization and downstream analysis, while the completed IRMA project is reused.
+# -----------------------------------------------------------------------------
+checkpoint normalize_irma_outputs:
+    input:
+        project=f"{RESULTS}/{{sample}}/irma/project",
+        normalizer="scripts/normalize_irma_outputs.py"
+    output:
+        segments=directory(f"{RESULTS}/{{sample}}/irma/segments"),
+        manifest=f"{RESULTS}/{{sample}}/irma/manifest.tsv"
+    log:
+        f"{RESULTS}/{{sample}}/irma/normalize.log"
+    conda:
+        "envs/pysam.yaml"
+    run:
+        project_path = Path(str(input.project)).resolve()
+        normalizer_path = Path(str(input.normalizer)).resolve()
+        segments_path = Path(str(output.segments)).resolve()
+        manifest_path = Path(str(output.manifest)).resolve()
+        log_path = Path(str(log[0])).resolve()
+
+        segments_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if segments_path.exists():
+            shutil.rmtree(segments_path)
+        if manifest_path.exists():
+            manifest_path.unlink()
+
+        def remove_partial_normalized_outputs():
+            if segments_path.exists():
+                shutil.rmtree(segments_path, ignore_errors=True)
+            if manifest_path.exists():
+                manifest_path.unlink()
 
         normalize_command = [
             sys.executable,
@@ -663,8 +694,8 @@ checkpoint irma:
             "--sample",
             str(wildcards.sample),
         ]
-        with log_path.open("a") as log_handle:
-            log_handle.write("\nNormalization command: " + shlex.join(normalize_command) + "\n")
+        with log_path.open("w") as log_handle:
+            log_handle.write("Normalization command: " + shlex.join(normalize_command) + "\n")
             log_handle.flush()
             try:
                 subprocess.run(
@@ -679,17 +710,14 @@ checkpoint irma:
                     f"NORMALIZER_RETURN_CODE={exc.returncode}\n"
                 )
                 log_handle.flush()
-                remove_partial_irma_outputs()
+                remove_partial_normalized_outputs()
                 raise RuntimeError(
                     f"IRMA output normalization failed for sample {wildcards.sample}. "
                     f"See {log_path}."
                 ) from exc
 
-        # Validate the normalized interface. A sample may legitimately have zero
-        # READY segments, but the manifest itself must exist and be structurally
-        # valid. This prevents partial or malformed outputs from entering the DAG.
         if not manifest_path.is_file() or manifest_path.stat().st_size == 0:
-            remove_partial_irma_outputs()
+            remove_partial_normalized_outputs()
             raise RuntimeError(
                 f"IRMA normalization did not create a non-empty manifest for "
                 f"sample {wildcards.sample}. See {log_path}."
@@ -700,7 +728,7 @@ checkpoint irma:
             required_columns = {"segment", "status"}
             if reader.fieldnames is None or not required_columns.issubset(reader.fieldnames):
                 fieldnames = reader.fieldnames or []
-                remove_partial_irma_outputs()
+                remove_partial_normalized_outputs()
                 raise RuntimeError(
                     f"IRMA manifest for sample {wildcards.sample} is malformed; "
                     f"required columns are {sorted(required_columns)}, found "
@@ -714,7 +742,7 @@ checkpoint irma:
             if row.get("status") == "READY" and row.get("segment") in SEGMENT_SEQUENCE
         })
         with log_path.open("a") as log_handle:
-            log_handle.write("\nESCAPE_STATUS=IRMA_COMPLETED\n")
+            log_handle.write("\nESCAPE_STATUS=IRMA_NORMALIZATION_COMPLETED\n")
             log_handle.write(f"ESCAPE_READY_SEGMENT_COUNT={len(ready_segments)}\n")
             log_handle.write(
                 "ESCAPE_READY_SEGMENTS="

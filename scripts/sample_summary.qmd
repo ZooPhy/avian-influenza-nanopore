@@ -84,6 +84,18 @@ if summary.empty:
 
 row = summary.iloc[0]
 
+# IRMA can occasionally emit more than one candidate contig for a segment.
+# Candidate ambiguity is a review condition, not a hard segment-QC failure.
+if "candidate_count" not in coverage.columns:
+    coverage["candidate_count"] = 0
+coverage["candidate_count"] = pd.to_numeric(coverage["candidate_count"], errors="coerce").fillna(0).astype(int)
+if "selection_status" not in coverage.columns:
+    coverage["selection_status"] = coverage["candidate_count"].apply(
+        lambda n: "MULTIPLE_CANDIDATES" if n > 1 else "UNIQUE" if n == 1 else "MISSING"
+    )
+multiple_irma_candidates = coverage.loc[coverage["candidate_count"] > 1].copy()
+multiple_irma_candidate_segments = multiple_irma_candidates["segment"].astype(str).tolist()
+
 
 def read_status_tsv(path):
     """Read the first data row from a WINGS status TSV, if present."""
@@ -145,6 +157,10 @@ else:
     review_status = "status-warning"
 
 medaka_review_notes = []
+if multiple_irma_candidate_segments:
+    medaka_review_notes.append(
+        "Multiple IRMA candidates: " + ", ".join(multiple_irma_candidate_segments)
+    )
 if medaka_fallback_segments:
     medaka_review_notes.append(
         "IRMA fallback after Medaka failure: " + ", ".join(medaka_fallback_segments)
@@ -402,6 +418,8 @@ default_expected_lengths = {
 segment_data = coverage.copy()
 segment_data["segment"] = segment_data["segment"].astype(str)
 segment_data["contig"] = segment_data["contig"].astype(str)
+segment_data["candidate_count"] = pd.to_numeric(segment_data.get("candidate_count", 0), errors="coerce").fillna(0).astype(int)
+segment_data["selection_status"] = segment_data.get("selection_status", "MISSING").astype(str)
 
 numeric_columns = [
     "length", "coverage_positions", "median_depth", "mean_depth", "breadth_covered",
@@ -585,6 +603,31 @@ display(
         + "</div>"
     )
 )
+```
+
+
+## IRMA candidate selection
+
+```{python}
+if multiple_irma_candidates.empty:
+    display(HTML(
+        '<div class="report-panel"><p><strong>IRMA candidate selection:</strong> '
+        'All recovered segments had a unique IRMA candidate.</p></div>'
+    ))
+else:
+    ambiguity_table = multiple_irma_candidates[[
+        "segment", "contig", "candidate_count", "selection_status", "selection_reason"
+    ]].copy()
+    ambiguity_table.columns = [
+        "Segment", "Selected contig", "Candidate count", "Selection status", "Selection reason"
+    ]
+    display(HTML(
+        '<div class="report-panel">'
+        '<p><strong>Review condition:</strong> IRMA produced multiple candidate contigs for one or more segments. '
+        'WINGS retained the deterministically selected candidate; this does not by itself fail segment QC.</p>'
+        + ambiguity_table.to_html(index=False, escape=True, classes="report-table")
+        + '</div>'
+    ))
 ```
 
 
