@@ -266,6 +266,109 @@ for (column_name in names(column_defaults)) {
   }
 }
 
+# Collect explicit Medaka stage status files for run-level provenance.
+medaka_segments <- c("PB2", "PB1", "PA", "HA", "NP", "NA", "MP", "NS")
+
+read_status_row <- function(path) {
+  if (!file.exists(path) || file.info(path)$size == 0) {
+    return(NULL)
+  }
+  status_row <- tryCatch(
+    read_tsv(path, show_col_types = FALSE, progress = FALSE),
+    error = function(e) NULL
+  )
+  if (is.null(status_row) || nrow(status_row) == 0) {
+    return(NULL)
+  }
+  status_row[1, , drop = FALSE]
+}
+
+medaka_rows <- list()
+row_index <- 1L
+for (configured_sample_id in sample_ids) {
+  for (segment in medaka_segments) {
+    segment_dir <- file.path(params$results_dir, configured_sample_id, "medaka", segment)
+    inference <- read_status_row(file.path(segment_dir, "inference.status.tsv"))
+    consensus_stage <- read_status_row(file.path(segment_dir, "consensus.status.tsv"))
+    variants <- read_status_row(file.path(segment_dir, "variants.status.tsv"))
+
+    get_value <- function(record, column, default = "NOT_RECORDED") {
+      if (is.null(record) || !column %in% names(record)) return(default)
+      value <- trimws(as.character(record[[column]][1]))
+      if (is.na(value) || !nzchar(value)) default else value
+    }
+
+    medaka_rows[[row_index]] <- tibble(
+      sample_id = configured_sample_id,
+      segment = segment,
+      inference_status = toupper(get_value(inference, "status")),
+      inference_reason = get_value(inference, "reason", ""),
+      consensus_status = toupper(get_value(consensus_stage, "status")),
+      consensus_source = toupper(get_value(consensus_stage, "consensus_source")),
+      consensus_reason = get_value(consensus_stage, "reason", ""),
+      variant_status = toupper(get_value(variants, "status")),
+      variant_reason = get_value(variants, "reason", "")
+    )
+    row_index <- row_index + 1L
+  }
+}
+
+medaka_status <- bind_rows(medaka_rows)
+medaka_by_sample <- medaka_status |>
+  group_by(sample_id) |>
+  summarise(
+    medaka_status_records = sum(
+      inference_status != "NOT_RECORDED" |
+        consensus_status != "NOT_RECORDED" |
+        variant_status != "NOT_RECORDED"
+    ),
+    medaka_polished_segments = sum(
+      consensus_status == "SUCCESS" & consensus_source == "MEDAKA"
+    ),
+    irma_fallback_segments = sum(consensus_source == "IRMA_FALLBACK"),
+    medaka_failed_segments = sum(
+      inference_status == "FAILED" |
+        consensus_status == "FAILED" |
+        variant_status == "FAILED"
+    ),
+    medaka_skipped_qc_segments = sum(
+      inference_status == "SKIPPED_QC" | consensus_status == "SKIPPED_QC"
+    ),
+    vcf_failed_segments = sum(variant_status == "FAILED"),
+    .groups = "drop"
+  )
+
+summary <- summary |>
+  left_join(medaka_by_sample, by = "sample_id") |>
+  mutate(
+    across(
+      c(
+        medaka_status_records, medaka_polished_segments, irma_fallback_segments,
+        medaka_failed_segments, medaka_skipped_qc_segments, vcf_failed_segments
+      ),
+      ~ coalesce(.x, 0L)
+    )
+  )
+
+# A Medaka failure/fallback is analytically usable in fail-soft mode but still
+# warrants explicit review because downstream consensus provenance changed.
+medaka_review <- summary$medaka_failed_segments > 0 | summary$irma_fallback_segments > 0
+summary$review_required <- summary$review_required | medaka_review
+medaka_reason <- ifelse(
+  medaka_review,
+  paste0(
+    "Medaka: ", summary$medaka_failed_segments, " failed segment(s); ",
+    summary$irma_fallback_segments, " IRMA fallback segment(s)"
+  ),
+  NA_character_
+)
+existing_reason <- trimws(as.character(summary$review_reason))
+summary$review_reason <- ifelse(
+  medaka_review & !is.na(existing_reason) & nzchar(existing_reason),
+  paste(existing_reason, medaka_reason, sep = "; "),
+  ifelse(medaka_review, medaka_reason, summary$review_reason)
+)
+
 # Normalize missing subtype calls for display and export. The influenza A
 # segment name "NA" is retained; only absent subtype calls become "Unknown".
 normalize_subtype_call <- function(values) {
@@ -480,6 +583,95 @@ if (n_review == 0) {
 }
 ```
 
+## Medaka Processing Provenance
+
+WINGS records Medaka inference, consensus-polishing, and VCF-generation status separately for each segment. A segment reported as **IRMA fallback** passed WINGS segment QC but could not be successfully polished by Medaka, so the QC-passing IRMA consensus was carried forward with explicit provenance. A **FAILED** VCF status means variant generation failed; it is not treated as a successful empty VCF.
+
+```{r}
+medaka_recorded <- medaka_status |>
+  filter(
+    inference_status != "NOT_RECORDED" |
+      consensus_status != "NOT_RECORDED" |
+      variant_status != "NOT_RECORDED"
+  )
+
+medaka_overview <- tibble(
+  Metric = c(
+    "Segments with Medaka status",
+    "Medaka-polished consensuses",
+    "IRMA fallback consensuses",
+    "Segments with any Medaka failure",
+    "VCF generation failures"
+  ),
+  Count = c(
+    nrow(medaka_recorded),
+    sum(medaka_status$consensus_status == "SUCCESS" & medaka_status$consensus_source == "MEDAKA"),
+    sum(medaka_status$consensus_source == "IRMA_FALLBACK"),
+    sum(
+      medaka_status$inference_status == "FAILED" |
+        medaka_status$consensus_status == "FAILED" |
+        medaka_status$variant_status == "FAILED"
+    ),
+    sum(medaka_status$variant_status == "FAILED")
+  )
+)
+
+medaka_overview |>
+  gt() |>
+  tab_header(title = "Medaka Status Overview") |>
+  tab_options(
+    table.width = pct(70),
+    table.font.size = px(13),
+    heading.background.color = "#8C1D40",
+    heading.title.font.size = px(18)
+  )
+```
+
+```{r}
+medaka_issues <- medaka_status |>
+  filter(
+    inference_status == "FAILED" |
+      consensus_status == "FAILED" |
+      consensus_source == "IRMA_FALLBACK" |
+      variant_status == "FAILED"
+  ) |>
+  mutate(
+    sample_id = sprintf(
+      "[%s](../%s/summary/%s.sample_summary.html)",
+      sample_id, sample_id, sample_id
+    )
+  ) |>
+  select(
+    sample_id, segment, inference_status, consensus_status,
+    consensus_source, variant_status
+  )
+
+if (nrow(medaka_issues) == 0) {
+  div(
+    class = "alert alert-success",
+    h4("✓ No Medaka failures or IRMA fallbacks were recorded."),
+    p("All recorded Medaka processing stages completed without a fail-soft fallback.")
+  )
+} else {
+  medaka_issues |>
+    gt() |>
+    fmt_markdown(columns = sample_id) |>
+    cols_label(
+      sample_id = "Sample",
+      segment = "Segment",
+      inference_status = "Inference",
+      consensus_status = "Consensus",
+      consensus_source = "Consensus Source",
+      variant_status = "VCF"
+    ) |>
+    tab_options(
+      table.width = pct(100),
+      table.font.size = px(13),
+      heading.background.color = "#8C1D40"
+    )
+}
+```
+
 ## Sample Summary
 
 ```{r}
@@ -508,6 +700,9 @@ sample_table <-
     ha_call,
     na_call,
     pass_segments,
+    medaka_polished_segments,
+    irma_fallback_segments,
+    medaka_failed_segments,
     subtype_min_median_depth,
     aa_changes,
     synonymous_changes,
@@ -528,6 +723,9 @@ sample_table |>
     ha_call = "HA",
     na_call = "NA",
     pass_segments = "Passing Segments",
+    medaka_polished_segments = "Medaka Polished",
+    irma_fallback_segments = "IRMA Fallback",
+    medaka_failed_segments = "Medaka Failed",
     subtype_min_median_depth = "Min Median Depth",
     aa_changes = "AA Changes",
     synonymous_changes = "Synonymous",

@@ -141,6 +141,7 @@ if MEDAKA_MODEL is not None:
 MEDAKA_MODEL_RECORDS = int(config.get("medaka_model_records", 100))
 if MEDAKA_MODEL_RECORDS < 1:
     raise ValueError("medaka_model_records must be at least 1")
+
 MEDAKA_FAIL_SOFT = as_bool(config.get("medaka_fail_soft", True))
 
 NANOPLOT_INSTALL_CHROME = as_bool(
@@ -802,7 +803,8 @@ rule medaka_inference:
         flag=f"{RESULTS}/{{sample}}/coverage_flags/{{segment}}.flag",
         model=f"{RESULTS}/{{sample}}/medaka/model.tsv"
     output:
-        features=f"{RESULTS}/{{sample}}/medaka/{{segment}}/features.hdf"
+        features=f"{RESULTS}/{{sample}}/medaka/{{segment}}/features.hdf",
+        status=f"{RESULTS}/{{sample}}/medaka/{{segment}}/inference.status.tsv"
     log:
         f"{RESULTS}/{{sample}}/medaka/{{segment}}/medaka_inference.log"
     conda:
@@ -830,6 +832,7 @@ rule medaka_inference:
         fi
 
         if [[ -z "$model" ]]; then
+            echo -e "status\tmodel_source\tmodel\treason\nFAILED\t$model_source\t\tmodel resolution failed" > {output.status:q}
             echo "Could not resolve Medaka consensus model from {input.model:q}." > {log:q}
             exit 1
         fi
@@ -837,22 +840,22 @@ rule medaka_inference:
         echo "Medaka consensus selector: $model" > {log:q}
         echo "Medaka model source: $model_source" >> {log:q}
 
-        if grep -q '^PASS$' {input.flag:q}; then
-            if medaka inference {input.bam:q} {output.features:q} \
-                --threads {threads} \
-                --model "$model" \
-                >> {log:q} 2>&1; then
-                [[ -e {output.features:q} ]] || : > {output.features:q}
-            elif [[ {params.fail_soft:q} == "true" ]]; then
-                echo "Medaka inference failed; creating an empty features file because medaka_fail_soft=true." >> {log:q}
-                : > {output.features:q}
-            else
-                echo "Medaka inference failed and medaka_fail_soft=false." >> {log:q}
-                exit 1
-            fi
-        else
+        if ! grep -q '^PASS$' {input.flag:q}; then
             echo "Segment did not pass segment QC; Medaka inference skipped." >> {log:q}
             : > {output.features:q}
+            echo -e "status\tmodel_source\tmodel\treason\nSKIPPED_QC\t$model_source\t$model\tsegment_qc_failed" > {output.status:q}
+        elif medaka inference {input.bam:q} {output.features:q} \
+                --threads {threads} \
+                --model "$model" \
+                >> {log:q} 2>&1 && [[ -s {output.features:q} ]]; then
+            echo -e "status\tmodel_source\tmodel\treason\nSUCCESS\t$model_source\t$model\tinference_completed" > {output.status:q}
+        elif [[ {params.fail_soft:q} == "true" ]]; then
+            echo "Medaka inference failed; continuing with explicit FAILED status because medaka_fail_soft=true." >> {log:q}
+            : > {output.features:q}
+            echo -e "status\tmodel_source\tmodel\treason\nFAILED\t$model_source\t$model\tmedaka_inference_failed" > {output.status:q}
+        else
+            echo "Medaka inference failed and medaka_fail_soft=false." >> {log:q}
+            exit 1
         fi
         """
 
@@ -863,31 +866,65 @@ rule medaka_inference:
 rule medaka_consensus:
     input:
         features=f"{RESULTS}/{{sample}}/medaka/{{segment}}/features.hdf",
+        inference_status=f"{RESULTS}/{{sample}}/medaka/{{segment}}/inference.status.tsv",
         fasta=fasta_path,
         flag=f"{RESULTS}/{{sample}}/coverage_flags/{{segment}}.flag"
     output:
-        consensus=f"{RESULTS}/{{sample}}/medaka/{{segment}}/consensus.fasta"
+        consensus=f"{RESULTS}/{{sample}}/medaka/{{segment}}/consensus.fasta",
+        status=f"{RESULTS}/{{sample}}/medaka/{{segment}}/consensus.status.tsv"
     log:
         f"{RESULTS}/{{sample}}/medaka/{{segment}}/medaka_sequence.log"
     conda:
         "envs/medaka.yaml"
     threads:
         MEDAKA_THREADS
+    params:
+        fail_soft="true" if MEDAKA_FAIL_SOFT else "false"
     shell:
         r"""
         set -euo pipefail
         mkdir -p "$(dirname {output.consensus:q})"
 
-        if grep -q '^PASS$' {input.flag:q} && [[ -s {input.features:q} ]]; then
-            medaka sequence \
+        inference_status="$(awk -F '\t' 'NR == 2 {{print $1}}' {input.inference_status:q})"
+
+        if ! grep -q '^PASS$' {input.flag:q}; then
+            echo "Segment did not pass segment QC; consensus skipped." > {log:q}
+            : > {output.consensus:q}
+            echo -e "status\tconsensus_source\treason\nSKIPPED_QC\tNONE\tsegment_qc_failed" > {output.status:q}
+        elif [[ "$inference_status" == "SUCCESS" && -s {input.features:q} ]]; then
+            if medaka sequence \
                 --threads {threads} \
                 {input.features:q} \
                 {input.fasta:q} \
                 {output.consensus:q} \
-                > {log:q} 2>&1
-        else
-            echo "Segment did not pass segment QC or features are empty; consensus skipped." > {log:q}
+                > {log:q} 2>&1 && [[ -s {output.consensus:q} ]]; then
+                echo -e "status\tconsensus_source\treason\nSUCCESS\tMEDAKA\tpolishing_completed" > {output.status:q}
+            elif [[ {params.fail_soft:q} == "true" ]]; then
+                echo "Medaka polishing failed; falling back to the QC-passing IRMA consensus because medaka_fail_soft=true." >> {log:q}
+                cp {input.fasta:q} {output.consensus:q}
+                echo -e "status\tconsensus_source\treason\nFAILED\tIRMA_FALLBACK\tmedaka_consensus_failed" > {output.status:q}
+            else
+                echo "Medaka polishing failed and medaka_fail_soft=false." >> {log:q}
+                exit 1
+            fi
+        elif [[ "$inference_status" == "FAILED" && {params.fail_soft:q} == "true" ]]; then
+            echo "Medaka inference failed; falling back to the QC-passing IRMA consensus because medaka_fail_soft=true." > {log:q}
+            cp {input.fasta:q} {output.consensus:q}
+            echo -e "status\tconsensus_source\treason\nFAILED\tIRMA_FALLBACK\tmedaka_inference_failed" > {output.status:q}
+        elif [[ "$inference_status" == "FAILED" ]]; then
+            echo "Medaka inference failed and medaka_fail_soft=false." > {log:q}
+            exit 1
+        elif [[ "$inference_status" == "SKIPPED_QC" ]]; then
+            echo "Medaka inference was skipped because segment QC failed; no consensus generated." > {log:q}
             : > {output.consensus:q}
+            echo -e "status\tconsensus_source\treason\nSKIPPED_QC\tNONE\tinference_skipped_qc" > {output.status:q}
+        elif [[ {params.fail_soft:q} == "true" ]]; then
+            echo "Medaka inference status or features were invalid; falling back to the QC-passing IRMA consensus because medaka_fail_soft=true." > {log:q}
+            cp {input.fasta:q} {output.consensus:q}
+            echo -e "status\tconsensus_source\treason\nFAILED\tIRMA_FALLBACK\tinvalid_inference_state" > {output.status:q}
+        else
+            echo "Medaka inference status or features were invalid and medaka_fail_soft=false." > {log:q}
+            exit 1
         fi
         """
 
@@ -898,10 +935,12 @@ rule medaka_consensus:
 rule medaka_vcf:
     input:
         features=f"{RESULTS}/{{sample}}/medaka/{{segment}}/features.hdf",
+        inference_status=f"{RESULTS}/{{sample}}/medaka/{{segment}}/inference.status.tsv",
         fasta=fasta_path,
         flag=f"{RESULTS}/{{sample}}/coverage_flags/{{segment}}.flag"
     output:
-        vcf=f"{RESULTS}/{{sample}}/medaka/{{segment}}/variants.vcf"
+        vcf=f"{RESULTS}/{{sample}}/medaka/{{segment}}/variants.vcf",
+        status=f"{RESULTS}/{{sample}}/medaka/{{segment}}/variants.status.tsv"
     log:
         f"{RESULTS}/{{sample}}/medaka/{{segment}}/medaka_variant.log"
     conda:
@@ -922,7 +961,17 @@ rule medaka_vcf:
         python -c "import medaka; print('python medaka __version__ =', getattr(medaka, '__version__', '<no __version__>'))" \
             >> {log:q} 2>&1 || true
 
-        if grep -q '^PASS$' {input.flag:q} && [[ -s {input.features:q} ]]; then
+        inference_status="$(awk -F '\t' 'NR == 2 {{print $1}}' {input.inference_status:q})"
+
+        if ! grep -q '^PASS$' {input.flag:q}; then
+            echo "Segment did not pass segment QC; VCF generation skipped." >> {log:q}
+            : > {output.vcf:q}
+            echo -e "status\treason\nSKIPPED_QC\tsegment_qc_failed" > {output.status:q}
+        elif [[ "$inference_status" == "FAILED" ]]; then
+            echo "Medaka inference failed; VCF generation skipped." >> {log:q}
+            : > {output.vcf:q}
+            echo -e "status\treason\nFAILED\tmedaka_inference_failed" > {output.status:q}
+        elif [[ "$inference_status" == "SUCCESS" && -s {input.features:q} ]]; then
             rm -f {output.vcf:q}
 
             if medaka vcf \
@@ -946,21 +995,36 @@ rule medaka_vcf:
                     fi
                 fi
 
-                [[ -e {output.vcf:q} ]] || : > {output.vcf:q}
+                if [[ -s {output.vcf:q} ]]; then
+                    echo -e "status\treason\nSUCCESS\tvcf_generated" > {output.status:q}
+                elif [[ {params.fail_soft:q} == "true" ]]; then
+                    echo "Medaka VCF command completed without producing a non-empty VCF; continuing with explicit FAILED status because medaka_fail_soft=true." >> {log:q}
+                    : > {output.vcf:q}
+                    echo -e "status\treason\nFAILED\tmedaka_vcf_empty_output" > {output.status:q}
+                else
+                    echo "Medaka VCF command completed without producing a non-empty VCF and medaka_fail_soft=false." >> {log:q}
+                    exit 1
+                fi
 
             elif [[ {params.fail_soft:q} == "true" ]]; then
-                echo "Medaka VCF generation failed; creating an empty VCF because medaka_fail_soft=true." \
-                    >> {log:q}
+                echo "Medaka VCF generation failed; continuing with explicit FAILED status because medaka_fail_soft=true." >> {log:q}
                 : > {output.vcf:q}
+                echo -e "status\treason\nFAILED\tmedaka_vcf_failed" > {output.status:q}
             else
-                echo "Medaka VCF generation failed and medaka_fail_soft=false." \
-                    >> {log:q}
+                echo "Medaka VCF generation failed and medaka_fail_soft=false." >> {log:q}
                 exit 1
             fi
-        else
-            echo "Segment did not pass segment QC or features are empty; VCF generation skipped." \
-                >> {log:q}
+        elif [[ "$inference_status" == "SKIPPED_QC" ]]; then
+            echo "Medaka inference was skipped because segment QC failed; VCF generation skipped." >> {log:q}
             : > {output.vcf:q}
+            echo -e "status\treason\nSKIPPED_QC\tinference_skipped_qc" > {output.status:q}
+        elif [[ {params.fail_soft:q} == "true" ]]; then
+            echo "Medaka inference state or features were invalid; VCF generation recorded as FAILED." >> {log:q}
+            : > {output.vcf:q}
+            echo -e "status\treason\nFAILED\tinvalid_inference_output" > {output.status:q}
+        else
+            echo "Medaka inference state or features were invalid and medaka_fail_soft=false." >> {log:q}
+            exit 1
         fi
         """
 
@@ -1312,6 +1376,18 @@ rule sample_summary_html:
         template="scripts/sample_summary.qmd",
         genoflu=f"{RESULTS}/{{sample}}/genoflu/GenoFLU.tsv",
         vadr_log=f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.log",
+        medaka_inference_status=lambda wildcards: [
+            f"{RESULTS}/{wildcards.sample}/medaka/{segment}/inference.status.tsv"
+            for segment in segments_for_sample(wildcards)
+        ],
+        medaka_consensus_status=lambda wildcards: [
+            f"{RESULTS}/{wildcards.sample}/medaka/{segment}/consensus.status.tsv"
+            for segment in segments_for_sample(wildcards)
+        ],
+        medaka_variant_status=lambda wildcards: [
+            f"{RESULTS}/{wildcards.sample}/medaka/{segment}/variants.status.tsv"
+            for segment in segments_for_sample(wildcards)
+        ],
         css="scripts/report/sample-report.css",
         report_html="scripts/report/escape-report.html",
         report_js="scripts/report/escape-report.js"
@@ -1397,6 +1473,21 @@ rule run_summary_html:
         vadr_logs=expand(
             f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.log",
             sample=SAMPLES,
+        ),
+        medaka_inference_status=expand(
+            f"{RESULTS}/{{sample}}/medaka/{{segment}}/inference.status.tsv",
+            sample=SAMPLES,
+            segment=SEGMENT_SEQUENCE,
+        ),
+        medaka_consensus_status=expand(
+            f"{RESULTS}/{{sample}}/medaka/{{segment}}/consensus.status.tsv",
+            sample=SAMPLES,
+            segment=SEGMENT_SEQUENCE,
+        ),
+        medaka_variant_status=expand(
+            f"{RESULTS}/{{sample}}/medaka/{{segment}}/variants.status.tsv",
+            sample=SAMPLES,
+            segment=SEGMENT_SEQUENCE,
         ),
         template="scripts/run_summary.qmd",
         css="scripts/report/sample-report.css",

@@ -84,6 +84,50 @@ if summary.empty:
 
 row = summary.iloc[0]
 
+
+def read_status_tsv(path):
+    """Read the first data row from a WINGS status TSV, if present."""
+    path = Path(path)
+    if not path.is_file() or path.stat().st_size == 0:
+        return {}
+    try:
+        table = pd.read_csv(path, sep="\t", keep_default_na=False)
+    except Exception:
+        return {}
+    if table.empty:
+        return {}
+    return {str(key): str(value) for key, value in table.iloc[0].to_dict().items()}
+
+
+sample_dir = summary_file.parent.parent
+medaka_segment_status = {}
+for segment in ["PB2", "PB1", "PA", "HA", "NP", "NA", "MP", "NS"]:
+    segment_dir = sample_dir / "medaka" / segment
+    inference = read_status_tsv(segment_dir / "inference.status.tsv")
+    consensus_status = read_status_tsv(segment_dir / "consensus.status.tsv")
+    variants = read_status_tsv(segment_dir / "variants.status.tsv")
+    medaka_segment_status[segment] = {
+        "inference": inference,
+        "consensus": consensus_status,
+        "variants": variants,
+    }
+
+medaka_status_recorded = any(
+    record[stage]
+    for record in medaka_segment_status.values()
+    for stage in ("inference", "consensus", "variants")
+)
+medaka_fallback_segments = [
+    segment
+    for segment, record in medaka_segment_status.items()
+    if record["consensus"].get("consensus_source", "").upper() == "IRMA_FALLBACK"
+]
+medaka_failed_variant_segments = [
+    segment
+    for segment, record in medaka_segment_status.items()
+    if record["variants"].get("status", "").upper() == "FAILED"
+]
+
 def display_unknown(value):
     """Use Unknown for missing analytical calls without renaming the NA segment."""
     text = str(value).strip()
@@ -98,6 +142,22 @@ if review_flags == "NONE":
     review_status = "status-pass"
 else:
     review_text = review_flags.replace(";", ", ")
+    review_status = "status-warning"
+
+medaka_review_notes = []
+if medaka_fallback_segments:
+    medaka_review_notes.append(
+        "IRMA fallback after Medaka failure: " + ", ".join(medaka_fallback_segments)
+    )
+if medaka_failed_variant_segments:
+    medaka_review_notes.append(
+        "Medaka VCF failed: " + ", ".join(medaka_failed_variant_segments)
+    )
+if medaka_review_notes:
+    if review_text == "No review flags":
+        review_text = "; ".join(medaka_review_notes)
+    else:
+        review_text = review_text + "; " + "; ".join(medaka_review_notes)
     review_status = "status-warning"
 
 h5n1_status = str(row["h5n1_screen"]).upper()
@@ -214,6 +274,7 @@ overview = pd.DataFrame(
             "Segments detected",
             "Segments passing segment QC",
             "Consensus segments",
+            "Medaka provenance",
             "H5N1 screen",
             "GenoFLU status",
             "Review flags",
@@ -222,6 +283,11 @@ overview = pd.DataFrame(
             row["segments_detected"],
             row["segments_pass"],
             row["consensus_segments"],
+            (
+                f"{sum(1 for r in medaka_segment_status.values() if r['consensus'].get('consensus_source', '').upper() == 'MEDAKA')} Medaka-polished; "
+                f"{len(medaka_fallback_segments)} IRMA fallback"
+                if medaka_status_recorded else "Not recorded"
+            ),
             row["h5n1_screen"],
             row["genoflu_status"],
             review_text,
@@ -834,6 +900,8 @@ else:
 
 ## Consensus and variant files
 
+Medaka processing is tracked explicitly for each segment. **SUCCESS · MEDAKA** means polishing completed normally. **FAILED · IRMA FALLBACK** means Medaka failed after the segment passed WINGS segment QC, so the QC-passing IRMA consensus was carried forward with explicit provenance. **SKIPPED QC** means Medaka was not run because the segment did not pass segment QC. Variant-generation failures are reported separately and are not represented as successful empty VCFs.
+
 ```{python}
 def count_vcf_records(path):
     """Count non-header variant records in a valid, non-empty VCF."""
@@ -846,12 +914,29 @@ def count_vcf_records(path):
 
 segment_download_rows = []
 report_dir = summary_file.parent
-sample_dir = report_dir.parent
+
+def status_badge(status, label=None):
+    normalized = str(status or "NOT_RECORDED").upper()
+    css_class = {
+        "SUCCESS": "download-status-pass",
+        "SKIPPED_QC": "download-status-neutral",
+        "FAILED": "download-status-fail",
+    }.get(normalized, "download-status-neutral")
+    display_label = label or normalized.replace("_", " ")
+    return f'<span class="download-status {css_class}">{html.escape(display_label)}</span>'
 
 for _, segment_row in segment_data.iterrows():
     segment = str(segment_row["segment"])
     consensus_path = sample_dir / "medaka" / segment / "consensus.fasta"
     vcf_path = sample_dir / "medaka" / segment / "variants.vcf"
+    stage_status = medaka_segment_status.get(segment, {})
+    inference_record = stage_status.get("inference", {})
+    consensus_record = stage_status.get("consensus", {})
+    variant_record = stage_status.get("variants", {})
+    inference_status = inference_record.get("status", "NOT_RECORDED").upper()
+    consensus_status = consensus_record.get("status", "NOT_RECORDED").upper()
+    consensus_source = consensus_record.get("consensus_source", "NOT_RECORDED").upper()
+    variant_status = variant_record.get("status", "NOT_RECORDED").upper()
 
     consensus_available = consensus_path.exists() and consensus_path.stat().st_size > 0
     vcf_available = vcf_path.exists() and vcf_path.stat().st_size > 0
@@ -868,7 +953,27 @@ for _, segment_row in segment_data.iterrows():
 
     overall_status = str(segment_row["overall_status"]).upper()
 
-    if vcf_available:
+    if variant_status == "SUCCESS" and vcf_available:
+        variant_count = count_vcf_records(vcf_path)
+        variant_label = "1 variant" if variant_count == 1 else f"{variant_count} variants"
+        variant_summary = (
+            '<span class="download-status download-status-pass">'
+            f'{variant_label}</span>'
+        )
+        vcf_href = file_data_uri(vcf_path, "text/plain;charset=utf-8")
+        vcf_link = (
+            f'<a class="file-download-link" href="{vcf_href}" '
+            f'download="{html.escape(str(sample_id))}_{html.escape(segment)}_variants.vcf">'
+            '<span aria-hidden="true">↓</span> VCF</a>'
+        )
+    elif variant_status == "FAILED":
+        variant_summary = status_badge("FAILED", "FAILED")
+        vcf_link = '<span class="file-unavailable">Not generated</span>'
+    elif variant_status == "SKIPPED_QC":
+        variant_summary = status_badge("SKIPPED_QC", "Skipped: segment QC")
+        vcf_link = '<span class="file-unavailable">Not generated</span>'
+    elif vcf_available:
+        # Backward-compatible handling for reports generated before explicit status files.
         variant_count = count_vcf_records(vcf_path)
         variant_label = "1 variant" if variant_count == 1 else f"{variant_count} variants"
         variant_summary = (
@@ -909,7 +1014,19 @@ for _, segment_row in segment_data.iterrows():
                 f'<span class="download-status {status_class}">'
                 f'{html.escape(status)}</span>'
             ),
+            "Medaka inference": status_badge(inference_status),
+            "Consensus provenance": (
+                status_badge(
+                    consensus_status,
+                    (
+                        f"{consensus_status} · {consensus_source.replace('_', ' ')}"
+                        if consensus_source not in {"", "NOT_RECORDED"}
+                        else consensus_status
+                    ),
+                )
+            ),
             "Consensus": consensus_link,
+            "Variant status": status_badge(variant_status),
             "Variant calls": variant_summary,
             "VCF": vcf_link,
         }
