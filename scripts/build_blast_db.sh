@@ -10,16 +10,29 @@ DB_DIR="${RESOURCE_DIR}/flu_db"
 FASTA="${DB_DIR}/fluA_reference.fasta"
 DB_PREFIX="${DB_DIR}/fluA_db"
 TMP_DIR="${DB_DIR}/_extract_tmp"
+MANIFEST="${DB_DIR}/database_manifest.tsv"
 
 # The reference archive currently comes from the APGAP influenza pipeline release.
 GITHUB_REPO="${GITHUB_REPO:-ZooPhy/apgap-influenza-pipeline}"
 RELEASE_TAG="${RELEASE_TAG:-v0.1.0}"
 ASSET_NAME="${ASSET_NAME:-fluA_reference.fasta.zip}"
 ZIP_URL="${ZIP_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}}"
-BLAST_IMAGE="${BLAST_IMAGE:-ncbi/blast:latest}"
+BLAST_IMAGE="${BLAST_IMAGE:-ncbi/blast-static:2.17.0}"
 BLAST_DB_VERSION="${BLAST_DB_VERSION:-4}"
 
 mkdir -p "${RESOURCE_DIR}" "${DB_DIR}"
+
+sha256_file() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "${file}" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "${file}" | awk '{print $1}'
+    else
+        echo "ERROR: sha256sum or shasum is required to record BLAST database provenance." >&2
+        exit 1
+    fi
+}
 
 if [[ ! -f "${ZIP}" ]]; then
     echo "Compressed reference not found locally: ${ZIP}"
@@ -71,6 +84,8 @@ if [[ ! -s "${ZIP}" ]]; then
     exit 1
 fi
 
+ARCHIVE_SHA256="$(sha256_file "${ZIP}")"
+
 echo "Extracting influenza reference..."
 rm -rf "${TMP_DIR}"
 mkdir -p "${TMP_DIR}"
@@ -85,6 +100,7 @@ if [[ -z "${FASTA_SRC}" ]]; then
 fi
 
 cp -f "${FASTA_SRC}" "${FASTA}"
+FASTA_SHA256="$(sha256_file "${FASTA}")"
 
 # Remove an older database before rebuilding so incompatible database files
 # cannot be mixed.
@@ -92,8 +108,13 @@ find "${DB_DIR}" -maxdepth 1 -type f \
     \( -name 'fluA_db.n*' -o -name 'fluA_db.*db' \) \
     -delete
 
+BUILD_METHOD=""
+MAKEBLASTDB_VERSION=""
+
 build_with_local_blast() {
     echo "Building BLAST database version ${BLAST_DB_VERSION} with local makeblastdb..."
+    BUILD_METHOD="local"
+    MAKEBLASTDB_VERSION="$(makeblastdb -version 2>&1 | awk '/^makeblastdb:/{print; found=1} END{if(!found) print "unknown"}' | tr '\t' ' ')"
     makeblastdb \
         -in "${FASTA}" \
         -dbtype nucl \
@@ -102,6 +123,8 @@ build_with_local_blast() {
 
 build_with_docker() {
     echo "Building BLAST database version ${BLAST_DB_VERSION} with Docker..."
+    BUILD_METHOD="docker"
+    MAKEBLASTDB_VERSION="$(docker run --rm "${BLAST_IMAGE}" makeblastdb -version 2>&1 | awk '/^makeblastdb:/{print; found=1} END{if(!found) print "unknown"}' | tr '\t' ' ')"
     docker run --rm \
         -v "${ROOT_DIR}:/workspace" \
         -w /workspace \
@@ -114,6 +137,8 @@ build_with_docker() {
 
 build_with_apptainer() {
     echo "Building BLAST database version ${BLAST_DB_VERSION} with Apptainer..."
+    BUILD_METHOD="apptainer"
+    MAKEBLASTDB_VERSION="$(apptainer exec "docker://${BLAST_IMAGE}" makeblastdb -version 2>&1 | awk '/^makeblastdb:/{print; found=1} END{if(!found) print "unknown"}' | tr '\t' ' ')"
     apptainer exec \
         --bind "${ROOT_DIR}:/workspace" \
         "docker://${BLAST_IMAGE}" \
@@ -125,6 +150,8 @@ build_with_apptainer() {
 
 build_with_singularity() {
     echo "Building BLAST database version ${BLAST_DB_VERSION} with Singularity..."
+    BUILD_METHOD="singularity"
+    MAKEBLASTDB_VERSION="$(singularity exec "docker://${BLAST_IMAGE}" makeblastdb -version 2>&1 | awk '/^makeblastdb:/{print; found=1} END{if(!found) print "unknown"}' | tr '\t' ' ')"
     singularity exec \
         --bind "${ROOT_DIR}:/workspace" \
         "docker://${BLAST_IMAGE}" \
@@ -154,11 +181,34 @@ else
     exit 1
 fi
 
+CREATED_AT_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+{
+    printf 'database_name\tsource_archive\tsource_url\tgithub_repo\trelease_tag\tasset_name\tcreated_at_utc\tarchive_sha256\tfasta_sha256\tmakeblastdb_version\tblast_db_version\tbuild_method\tblast_image\tdb_prefix\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        'fluA_db' \
+        "resources/$(basename "${ZIP}")" \
+        "${ZIP_URL}" \
+        "${GITHUB_REPO}" \
+        "${RELEASE_TAG}" \
+        "${ASSET_NAME}" \
+        "${CREATED_AT_UTC}" \
+        "${ARCHIVE_SHA256}" \
+        "${FASTA_SHA256}" \
+        "${MAKEBLASTDB_VERSION}" \
+        "${BLAST_DB_VERSION}" \
+        "${BUILD_METHOD}" \
+        "${BLAST_IMAGE}" \
+        'resources/flu_db/fluA_db'
+} > "${MANIFEST}"
+
 rm -rf "${TMP_DIR}"
 
 echo
 echo "BLAST database successfully created:"
 echo "  ${DB_PREFIX}"
+echo "Provenance manifest written:"
+echo "  ${MANIFEST}"
 echo
 echo "Use this value in config.yaml:"
 echo "  blast_db: \"resources/flu_db/fluA_db\""
