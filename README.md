@@ -203,8 +203,8 @@ The validated cluster configuration uses:
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/ZooPhy/avian-influenza-nanopore.git
-cd avian-influenza-nanopore
+git clone https://github.com/ZooPhy/wings.git
+cd wings
 ```
 
 ### 2. Install Miniforge on Apple Silicon macOS
