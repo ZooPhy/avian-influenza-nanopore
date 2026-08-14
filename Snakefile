@@ -129,6 +129,18 @@ IRMA_MODULE = str(config.get("irma_module", "FLU-minion"))
 IRMA_RUNTIME = str(config.get("irma_runtime", "auto")).strip().lower()
 
 BLAST_DB = config_path("blast_db", "data/flu_db/flu")
+BLAST_MIN_IDENTITY = float(config.get("blast_min_identity", 95.0))
+BLAST_MIN_QUERY_COVERAGE = float(config.get("blast_min_query_coverage", 90.0))
+BLAST_MAX_TARGET_SEQS = int(config.get("blast_max_target_seqs", 10))
+BLAST_MAX_HSPS = int(config.get("blast_max_hsps", 1))
+if not 0.0 <= BLAST_MIN_IDENTITY <= 100.0:
+    raise ValueError("blast_min_identity must be between 0 and 100")
+if not 0.0 <= BLAST_MIN_QUERY_COVERAGE <= 100.0:
+    raise ValueError("blast_min_query_coverage must be between 0 and 100")
+if BLAST_MAX_TARGET_SEQS < 1:
+    raise ValueError("blast_max_target_seqs must be at least 1")
+if BLAST_MAX_HSPS < 1:
+    raise ValueError("blast_max_hsps must be at least 1")
 PORECHOP_CMD = config.get("porechop_command", "porechop_abi")
 
 FASTPLONG_MEAN_QUAL = int(config.get("fastplong_mean_quality", 10))
@@ -1226,7 +1238,9 @@ rule blastn:
     threads:
         BLAST_THREADS
     params:
-        database_prefix=BLAST_DB
+        database_prefix=BLAST_DB,
+        max_target_seqs=BLAST_MAX_TARGET_SEQS,
+        max_hsps=BLAST_MAX_HSPS
     shell:
         r"""
         set -euo pipefail
@@ -1241,10 +1255,12 @@ rule blastn:
         blastn \
             -query {input.fasta:q} \
             -db {params.database_prefix:q} \
-            -outfmt 6 \
+            -outfmt '6 qseqid sacc stitle pident length qlen qstart qend sstart send evalue bitscore' \
+            -max_target_seqs {params.max_target_seqs} \
+            -max_hsps {params.max_hsps} \
             -num_threads {threads} \
             2> {log:q} \
-          | LC_ALL=C sort -t $'\t' -k12,12gr -k11,11g -k3,3gr \
+          | LC_ALL=C sort -t $'\t' -k12,12gr -k11,11g -k4,4gr \
           > {output.txt:q}
         """
 
@@ -1257,9 +1273,16 @@ rule summarize_blast:
         blast_files=lambda wildcards: [
             f"{RESULTS}/{wildcards.sample}/blast/{segment}.blast.txt"
             for segment in segments_for_sample(wildcards)
+        ],
+        flags=lambda wildcards: [
+            f"{RESULTS}/{wildcards.sample}/coverage_flags/{segment}.flag"
+            for segment in SEGMENT_SEQUENCE
         ]
     output:
         csv=f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv"
+    params:
+        min_identity=BLAST_MIN_IDENTITY,
+        min_query_coverage=BLAST_MIN_QUERY_COVERAGE
     conda:
         "envs/py-tools.yaml"
     script:

@@ -562,12 +562,52 @@ display(
 ## BLAST top hits
 
 ```{python}
-blast_display = blast.copy()
-blast_display.columns = [
-    "Sample",
-    "Segment",
-    "Top BLAST hit",
-]
+# Display the richer BLAST evidence table introduced by WINGS while remaining
+# compatible with older three-column blast_top_hits.csv files.
+required_blast_columns = {
+    "segment",
+    "top_hit",
+    "percent_identity",
+    "query_coverage",
+    "evalue",
+    "bit_score",
+    "hit_status",
+}
+
+if required_blast_columns.issubset(blast.columns):
+    blast_display = blast[[
+        "segment",
+        "top_hit",
+        "percent_identity",
+        "query_coverage",
+        "evalue",
+        "bit_score",
+        "hit_status",
+    ]].copy()
+
+    blast_display.columns = [
+        "Segment",
+        "Top BLAST hit",
+        "Identity (%)",
+        "Query coverage (%)",
+        "E-value",
+        "Bit score",
+        "BLAST status",
+    ]
+
+    for column in ["Identity (%)", "Query coverage (%)", "Bit score"]:
+        blast_display[column] = pd.to_numeric(
+            blast_display[column], errors="coerce"
+        ).map(lambda value: f"{value:.3f}" if pd.notna(value) else "")
+else:
+    legacy_columns = [column for column in ["sample", "segment", "top_hit"] if column in blast.columns]
+    blast_display = blast[legacy_columns].copy()
+    rename_map = {
+        "sample": "Sample",
+        "segment": "Segment",
+        "top_hit": "Top BLAST hit",
+    }
+    blast_display = blast_display.rename(columns=rename_map)
 
 
 def ncbi_nuccore_link(accession):
