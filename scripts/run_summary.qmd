@@ -774,7 +774,7 @@ if (n_review == 0) {
     ) |>
     select(
       sample_id,
-      host,
+      display_host,
       potential_subtype,
       genome_status,
       review_reason
@@ -815,7 +815,7 @@ sample_table <-
     sample_id,
     QC,
     Review,
-    host,
+    display_host,
     potential_subtype,
     h5n1_screen,
     ha_call,
@@ -839,7 +839,7 @@ sample_table |>
     sample_id = "Sample",
     QC = "QC Status",
     Review = "Review",
-    host = "Host",
+    display_host = "Host",
     potential_subtype = "Predicted Subtype",
     h5n1_screen = "H5N1 Screen",
     ha_call = "HA",
@@ -978,12 +978,12 @@ p
 ```{r}
 host_counts <-
   summary %>%
-  count(host)
+  count(display_host)
 
 p <- ggplot(
   host_counts,
   aes(
-    reorder(host, n),
+    reorder(display_host, n),
     n
   )
 ) +
