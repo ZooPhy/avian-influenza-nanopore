@@ -292,3 +292,77 @@ def test_report_bundle_embeds_provenance(tmp_path):
     assert bundle["sample_count"] == 1
     assert bundle["provenance"]["filename"] == "run_provenance.json"
     assert bundle["provenance"]["data"]["workflow"]["name"] == "WINGS"
+
+
+def test_sample_summary_preserves_metadata_and_protects_analytical_fields(tmp_path):
+    mod = load_module("sample_summary_metadata", "scripts/sample_summary.py")
+    output = tmp_path / "summary.tsv"
+
+    segments = ["HA", "NA", "PB2", "PB1", "PA", "NP", "MP", "NS"]
+    coverage_rows = [
+        {
+            "segment": segment,
+            "coverage_flag": "PASS",
+            "contig": (
+                "A_HA_H5" if segment == "HA"
+                else "A_NA_N1" if segment == "NA"
+                else segment
+            ),
+            "median_depth": "100",
+            "candidate_count": "1",
+        }
+        for segment in segments
+    ]
+
+    fastplong = {
+        "reads_before": 100,
+        "bases_before": 1000,
+        "q20_rate_before": 0.5,
+        "q30_rate_before": 0.2,
+        "reads_after": 90,
+        "bases_after": 900,
+        "q20_rate_after": 0.6,
+        "q30_rate_after": 0.3,
+        "reads_passed": 90,
+        "reads_low_quality": 5,
+        "reads_too_short": 5,
+        "reads_with_adapters": 0,
+    }
+
+    metadata = {
+        "sample_id": "TEST_SAMPLE",
+        "host_common_name": "Mallard",
+        "host_species": "Anas platyrhynchos",
+        "collection_date": "2026-01-15",
+        "state": "Arizona",
+        "flyway": "Pacific",
+        "custom_project_field": "sentinel-site-7",
+        "review_flags": "metadata_must_not_override_analysis",
+    }
+
+    mod.write_summary(
+        output_path=output,
+        sample="TEST_SAMPLE",
+        fastplong=fastplong,
+        coverage_rows=coverage_rows,
+        blast_hits={"HA": "ACC_HA", "NA": "ACC_NA"},
+        h5n1_status="DETECTED",
+        genoflu_status="COMPLETED",
+        consensus_segments=8,
+        metadata=metadata,
+    )
+
+    row = read_one_tsv(output)
+
+    assert row["sample"] == "TEST_SAMPLE"
+    assert row["sample_id"] == "TEST_SAMPLE"
+    assert row["host_common_name"] == "Mallard"
+    assert row["host_species"] == "Anas platyrhynchos"
+    assert row["collection_date"] == "2026-01-15"
+    assert row["state"] == "Arizona"
+    assert row["flyway"] == "Pacific"
+    assert row["custom_project_field"] == "sentinel-site-7"
+
+    # Metadata cannot overwrite WINGS analytical fields.
+    assert row["metadata_review_flags"] == "metadata_must_not_override_analysis"
+    assert row["review_flags"] == "h5n1_screen_detected"

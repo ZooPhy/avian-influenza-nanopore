@@ -36,6 +36,24 @@ def read_coverage(path: Path) -> list[dict]:
         return list(csv.DictReader(handle, delimiter="\t"))
 
 
+def read_metadata(path: Path) -> dict[str, str]:
+    if not path.is_file() or path.stat().st_size == 0:
+        return {}
+
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        row = next(reader, None)
+
+    if not row:
+        return {}
+
+    return {
+        str(key).strip(): ("" if value is None else str(value).strip())
+        for key, value in row.items()
+        if key is not None and str(key).strip()
+    }
+
+
 def read_blast(path: Path) -> dict[str, str]:
     hits = {}
     with path.open(newline="") as handle:
@@ -91,6 +109,7 @@ def write_summary(
     h5n1_status: str,
     genoflu_status: str,
     consensus_segments: int,
+    metadata: dict[str, str] | None = None,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -149,8 +168,7 @@ def write_summary(
     if multiple_candidate_segments:
         review_flags.append("multiple_irma_candidates")
 
-    fieldnames = [
-        "sample",
+    analytical_fields = [
         "reads_before",
         "reads_after",
         "bases_before",
@@ -182,8 +200,20 @@ def write_summary(
         "na_top_blast_hit",
     ]
 
+    metadata = dict(metadata or {})
+    normalized_metadata = {}
+    reserved_fields = {"sample", *analytical_fields}
+
+    for key, value in metadata.items():
+        output_key = key if key not in reserved_fields else f"metadata_{key}"
+        normalized_metadata[output_key] = value
+
+    metadata_fields = list(normalized_metadata)
+    fieldnames = ["sample", *metadata_fields, *analytical_fields]
+
     row = {
         "sample": sample,
+        **normalized_metadata,
         **fastplong,
         "segments_detected": len(coverage_rows),
         "segments_pass": len(pass_segments),
@@ -213,6 +243,7 @@ def write_summary(
 def main() -> None:
     sample = snakemake.wildcards.sample
 
+    metadata = read_metadata(Path(snakemake.input.metadata))
     fastplong = read_fastplong_json(Path(snakemake.input.fastplong))
     coverage_rows = read_coverage(Path(snakemake.input.coverage))
     blast_hits = read_blast(Path(snakemake.input.blast))
@@ -229,6 +260,7 @@ def main() -> None:
         h5n1_status=h5n1_status,
         genoflu_status=genoflu_status,
         consensus_segments=consensus_segments,
+        metadata=metadata,
     )
 
 

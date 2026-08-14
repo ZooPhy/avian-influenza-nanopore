@@ -273,7 +273,11 @@ if (!"subtype_min_median_depth" %in% names(summary)) {
 }
 
 column_defaults <- list(
-  host = "Unknown",
+  host_common_name = "Unknown",
+  host_species = "Unknown",
+  collection_date = "Unknown",
+  state = "Unknown",
+  flyway = "Unknown",
   potential_subtype = "Undetermined",
   ha_call = NA_character_,
   na_call = NA_character_,
@@ -287,6 +291,80 @@ for (column_name in names(column_defaults)) {
   if (!column_name %in% names(summary)) {
     summary[[column_name]] <- column_defaults[[column_name]]
   }
+}
+
+# Normalize metadata aliases for report display while preserving the
+# original user-supplied metadata columns in run_summary.tsv.
+if (!"display_host" %in% names(summary)) {
+  summary$display_host <- ifelse(
+    !is.na(summary$host_common_name) &
+      nzchar(trimws(as.character(summary$host_common_name))) &
+      toupper(trimws(as.character(summary$host_common_name))) != "UNKNOWN",
+    as.character(summary$host_common_name),
+    ifelse(
+      !is.na(summary$host_species) &
+        nzchar(trimws(as.character(summary$host_species))) &
+        toupper(trimws(as.character(summary$host_species))) != "UNKNOWN",
+      as.character(summary$host_species),
+      if ("host" %in% names(summary)) as.character(summary$host) else "Unknown"
+    )
+  )
+}
+
+if (!"display_sample_type" %in% names(summary)) {
+  summary$display_sample_type <- ifelse(
+    !is.na(summary$sample_type) &
+      nzchar(trimws(as.character(summary$sample_type))) &
+      toupper(trimws(as.character(summary$sample_type))) != "UNKNOWN",
+    as.character(summary$sample_type),
+    if ("specimen_type" %in% names(summary)) as.character(summary$specimen_type) else "Unknown"
+  )
+}
+
+# Normalize metadata aliases for report display while preserving original
+# user-supplied metadata columns in run_summary.tsv.
+if (!"display_host" %in% names(summary)) {
+  valid_host_common <- !is.na(summary$host_common_name) &
+    nzchar(trimws(as.character(summary$host_common_name))) &
+    toupper(trimws(as.character(summary$host_common_name))) != "UNKNOWN"
+
+  valid_host_species <- !is.na(summary$host_species) &
+    nzchar(trimws(as.character(summary$host_species))) &
+    toupper(trimws(as.character(summary$host_species))) != "UNKNOWN"
+
+  legacy_host <- if ("host" %in% names(summary)) {
+    as.character(summary$host)
+  } else {
+    rep("Unknown", nrow(summary))
+  }
+
+  summary$display_host <- ifelse(
+    valid_host_common,
+    as.character(summary$host_common_name),
+    ifelse(
+      valid_host_species,
+      as.character(summary$host_species),
+      legacy_host
+    )
+  )
+}
+
+if (!"display_sample_type" %in% names(summary)) {
+  valid_sample_type <- !is.na(summary$sample_type) &
+    nzchar(trimws(as.character(summary$sample_type))) &
+    toupper(trimws(as.character(summary$sample_type))) != "UNKNOWN"
+
+  legacy_specimen_type <- if ("specimen_type" %in% names(summary)) {
+    as.character(summary$specimen_type)
+  } else {
+    rep("Unknown", nrow(summary))
+  }
+
+  summary$display_sample_type <- ifelse(
+    valid_sample_type,
+    as.character(summary$sample_type),
+    legacy_specimen_type
+  )
 }
 
 # Collect explicit Medaka stage status files for run-level provenance.
@@ -417,11 +495,30 @@ review <- summary |>
 write_tsv(summary, params$run_summary_tsv)
 write_tsv(review, params$review_tsv)
 
-host_values <- if ("host" %in% names(summary)) {
-  unique(na.omit(summary$host))
-} else {
-  character(0)
+get_populated_values <- function(column_name) {
+  if (!column_name %in% names(summary)) {
+    return(character(0))
+  }
+
+  values <- trimws(as.character(summary[[column_name]]))
+  values[
+    !is.na(values) &
+    nzchar(values) &
+    toupper(values) != "UNKNOWN"
+  ]
 }
+
+host_values <- get_populated_values("host_common_name")
+
+if (length(host_values) == 0) {
+  host_values <- get_populated_values("host_species")
+}
+
+if (length(host_values) == 0) {
+  host_values <- get_populated_values("host")
+}
+
+host_values <- unique(host_values)
 
 metadata <- tibble(
   Metric = c("Run date", "Host", "Pipeline version"),
@@ -602,7 +699,17 @@ h5n1_attention <- summary |>
       sample_id, sample_id, sample_id
     )
   ) |>
-  select(sample_id, host, potential_subtype, h5n1_screen, pass_segments)
+  select(
+    sample_id,
+    host_common_name,
+    host_species,
+    collection_date,
+    state,
+    flyway,
+    potential_subtype,
+    h5n1_screen,
+    pass_segments
+  )
 
 if (nrow(h5n1_attention) > 0) {
   h5n1_attention |>
@@ -610,6 +717,11 @@ if (nrow(h5n1_attention) > 0) {
     fmt_markdown(columns = sample_id) |>
     cols_label(
       sample_id = "Sample",
+      host_common_name = "Host Common Name",
+      host_species = "Host Species",
+      collection_date = "Collection Date",
+      state = "State",
+      flyway = "Flyway",
       potential_subtype = "Predicted Subtype",
       h5n1_screen = "H5N1 Screen",
       pass_segments = "Passing Segments"
@@ -679,94 +791,6 @@ if (n_review == 0) {
 }
 ```
 
-## Medaka Processing Provenance
-
-WINGS records Medaka inference, consensus-polishing, and VCF-generation status separately for each segment. A segment reported as **IRMA fallback** passed WINGS segment QC but could not be successfully polished by Medaka, so the QC-passing IRMA consensus was carried forward with explicit provenance. A **FAILED** VCF status means variant generation failed; it is not treated as a successful empty VCF.
-
-```{r}
-medaka_recorded <- medaka_status |>
-  filter(
-    inference_status != "NOT_RECORDED" |
-      consensus_status != "NOT_RECORDED" |
-      variant_status != "NOT_RECORDED"
-  )
-
-medaka_overview <- tibble(
-  Metric = c(
-    "Segments with Medaka status",
-    "Medaka-polished consensuses",
-    "IRMA fallback consensuses",
-    "Segments with any Medaka failure",
-    "VCF generation failures"
-  ),
-  Count = c(
-    nrow(medaka_recorded),
-    sum(medaka_status$consensus_status == "SUCCESS" & medaka_status$consensus_source == "MEDAKA"),
-    sum(medaka_status$consensus_source == "IRMA_FALLBACK"),
-    sum(
-      medaka_status$inference_status == "FAILED" |
-        medaka_status$consensus_status == "FAILED" |
-        medaka_status$variant_status == "FAILED"
-    ),
-    sum(medaka_status$variant_status == "FAILED")
-  )
-)
-
-medaka_overview |>
-  gt() |>
-  tab_header(title = "Medaka Status Overview") |>
-  tab_options(
-    table.width = pct(70),
-    table.font.size = px(13),
-    heading.background.color = "#8C1D40",
-    heading.title.font.size = px(18)
-  )
-```
-
-```{r}
-medaka_issues <- medaka_status |>
-  filter(
-    inference_status == "FAILED" |
-      consensus_status == "FAILED" |
-      consensus_source == "IRMA_FALLBACK" |
-      variant_status == "FAILED"
-  ) |>
-  mutate(
-    sample_id = sprintf(
-      "[%s](../%s/summary/%s.sample_summary.html)",
-      sample_id, sample_id, sample_id
-    )
-  ) |>
-  select(
-    sample_id, segment, inference_status, consensus_status,
-    consensus_source, variant_status
-  )
-
-if (nrow(medaka_issues) == 0) {
-  div(
-    class = "alert alert-success",
-    h4("✓ No Medaka failures or IRMA fallbacks were recorded."),
-    p("All recorded Medaka processing stages completed without a fail-soft fallback.")
-  )
-} else {
-  medaka_issues |>
-    gt() |>
-    fmt_markdown(columns = sample_id) |>
-    cols_label(
-      sample_id = "Sample",
-      segment = "Segment",
-      inference_status = "Inference",
-      consensus_status = "Consensus",
-      consensus_source = "Consensus Source",
-      variant_status = "VCF"
-    ) |>
-    tab_options(
-      table.width = pct(100),
-      table.font.size = px(13),
-      heading.background.color = "#8C1D40"
-    )
-}
-```
 
 ## Sample Summary
 
@@ -836,31 +860,6 @@ sample_table |>
     heading.background.color = "#8C1D40",
     heading.title.font.size = px(18)
   )
-```
-
-## IRMA Candidate Ambiguity
-
-Multiple IRMA candidates are treated as a **review condition rather than a hard segment-QC failure**. WINGS keeps the deterministic candidate selected by its ranking logic while preserving the ambiguity in the sample summary.
-
-```{r}
-irma_ambiguity <- summary |>
-  filter(multiple_irma_candidate_count > 0) |>
-  select(sample_id, host, multiple_irma_candidate_count, multiple_irma_candidate_segments, review_reason)
-
-if (nrow(irma_ambiguity) == 0) {
-  cat("No samples contain segments with multiple IRMA candidates.")
-} else {
-  irma_ambiguity |>
-    gt() |>
-    cols_label(
-      sample_id = "Sample",
-      host = "Host",
-      multiple_irma_candidate_count = "Segments with >1 candidate",
-      multiple_irma_candidate_segments = "Affected segments",
-      review_reason = "Review reason"
-    ) |>
-    tab_options(table.width = pct(100), table.font.size = px(13))
-}
 ```
 
 

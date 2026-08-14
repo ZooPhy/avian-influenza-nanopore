@@ -301,6 +301,59 @@ header_html = f"""
 display(HTML(header_html))
 ```
 
+## Sample metadata
+
+```{python}
+summary_columns = list(summary.columns)
+metadata_columns = []
+
+# sample_summary.py places metadata between "sample" and "reads_before".
+if "reads_before" in summary_columns:
+    analytical_start = summary_columns.index("reads_before")
+    metadata_columns = [
+        column
+        for column in summary_columns[1:analytical_start]
+        if column != "sample"
+    ]
+
+metadata_rows = []
+
+for column in metadata_columns:
+    value = str(row[column]).strip()
+
+    if not value or value.upper() in {"NA", "N/A", "NONE", "NAN"}:
+        continue
+
+    metadata_rows.append(
+        {
+            "Field": column.replace("_", " ").strip().title(),
+            "Value": value,
+        }
+    )
+
+if metadata_rows:
+    metadata_table = pd.DataFrame(metadata_rows)
+    display(
+        HTML(
+            '<div class="report-panel">'
+            + metadata_table.to_html(
+                index=False,
+                escape=True,
+                classes="report-table",
+            )
+            + "</div>"
+        )
+    )
+else:
+    display(
+        HTML(
+            '<div class="report-panel">'
+            '<p>No sample metadata were supplied for this sample.</p>'
+            '</div>'
+        )
+    )
+```
+
 ```{python}
 overview = pd.DataFrame(
     {
