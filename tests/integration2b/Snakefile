@@ -1,0 +1,143 @@
+from pathlib import Path
+
+SAMPLES = ["qc_pass", "length_warning", "low_breadth", "no_hit"]
+SEGMENTS = ("HA", "NA", "PB2", "PB1", "PA", "NP", "MP", "NS")
+
+rule all:
+    input:
+        expand("tests/integration2b/work/{sample}/summary/blast_top_hits.csv", sample=SAMPLES),
+        expand("tests/integration2b/work/{sample}/coverage/coverage.tsv", sample=SAMPLES)
+
+rule make_fixture_sam:
+    output:
+        sam="tests/integration2b/work/{sample}/fixture/HA.sam",
+        fasta="tests/integration2b/work/{sample}/irma/segments/HA/consensus.fasta",
+        manifest="tests/integration2b/work/{sample}/irma/manifest.tsv"
+    run:
+        sample = wildcards.sample
+        out_sam = Path(output.sam)
+        out_fasta = Path(output.fasta)
+        out_manifest = Path(output.manifest)
+        out_sam.parent.mkdir(parents=True, exist_ok=True)
+        out_fasta.parent.mkdir(parents=True, exist_ok=True)
+        out_manifest.parent.mkdir(parents=True, exist_ok=True)
+
+        ref_len = 1909 if sample == "length_warning" else 1700
+        read_len = 1500 if sample == "low_breadth" else ref_len
+        seq = "A" * ref_len
+        out_fasta.write_text(f">A_HA_H5\n{seq}\n", encoding="utf-8")
+
+        candidate_count = 2 if sample == "length_warning" else 1
+        selection_status = "MULTIPLE_CANDIDATES" if candidate_count > 1 else "UNIQUE"
+        out_manifest.write_text(
+            "segment\tstatus\tcontig\tcandidate_count\tselection_status\n"
+            f"HA\tREADY\tA_HA_H5\t{candidate_count}\t{selection_status}\n",
+            encoding="utf-8",
+        )
+
+        read_seq = "A" * read_len
+        qual = "I" * read_len
+        with out_sam.open("w", encoding="utf-8") as handle:
+            handle.write("@HD\tVN:1.6\tSO:coordinate\n")
+            handle.write(f"@SQ\tSN:A_HA_H5\tLN:{ref_len}\n")
+            for i in range(60):
+                handle.write(
+                    f"r{i+1}\t0\tA_HA_H5\t1\t60\t{read_len}M\t*\t0\t0\t{read_seq}\t{qual}\n"
+                )
+
+rule make_fixture_bam:
+    input:
+        "tests/integration2b/work/{sample}/fixture/HA.sam"
+    output:
+        "tests/integration2b/work/{sample}/irma/segments/HA/alignment.bam"
+    conda:
+        "../../envs/coverage.yaml"
+    shell:
+        "samtools view -bS {input:q} > {output:q}"
+
+rule check_coverage_ha:
+    input:
+        segments_dir="tests/integration2b/work/{sample}/irma/segments",
+        manifest="tests/integration2b/work/{sample}/irma/manifest.tsv",
+        consensus="tests/integration2b/work/{sample}/irma/segments/{segment}/consensus.fasta",
+        bam="tests/integration2b/work/{sample}/irma/segments/{segment}/alignment.bam"
+    output:
+        flag="tests/integration2b/work/{sample}/coverage_flags/{segment}.flag",
+        stats="tests/integration2b/work/{sample}/coverage_stats/{segment}.tsv"
+    wildcard_constraints:
+        segment="HA"
+    params:
+        min_median_depth=50.0,
+        min_breadth=0.95,
+        max_n_fraction=0.01,
+        expected_length_min=1600,
+        expected_length_max=1800
+    conda:
+        "../../envs/coverage.yaml"
+    script:
+        "../../scripts/check_coverage.py"
+
+rule make_other_segment_qc:
+    output:
+        flags=expand("tests/integration2b/work/{{sample}}/coverage_flags/{segment}.flag", segment=SEGMENTS[1:]),
+        stats=expand("tests/integration2b/work/{{sample}}/coverage_stats/{segment}.tsv", segment=SEGMENTS[1:])
+    run:
+        for segment, flag_path, stats_path in zip(SEGMENTS[1:], output.flags, output.stats):
+            fp = Path(flag_path)
+            sp = Path(stats_path)
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_text("FAIL\n", encoding="utf-8")
+            sp.write_text(
+                "segment\tchosen_table\tselected_contig\tpositions\tconsensus_length\tn_count\tn_fraction\tmedian_depth\tmean_depth\tmin_depth\tmax_depth\tbreadth_covered\tthreshold\tminimum_breadth\texpected_length_min\texpected_length_max\tmaximum_n_fraction\tcoverage_status\tlength_status\tn_content_status\tstatus\tn_candidates\tselection_status\tselection_reason\n"
+                f"{segment}\tNA\tNA\t0\t0\t0\tNA\tNA\tNA\tNA\tNA\tNA\t50.00\t0.950\t1\t9999\t0.0100\tMISSING\tMISSING\tMISSING\tFAIL\t0\tMISSING\tfixture\n",
+                encoding="utf-8",
+            )
+
+rule coverage_table:
+    input:
+        manifest="tests/integration2b/work/{sample}/irma/manifest.tsv",
+        flags=lambda wc: [f"tests/integration2b/work/{wc.sample}/coverage_flags/{s}.flag" for s in SEGMENTS],
+        stats=lambda wc: [f"tests/integration2b/work/{wc.sample}/coverage_stats/{s}.tsv" for s in SEGMENTS]
+    output:
+        tsv="tests/integration2b/work/{sample}/coverage/coverage.tsv"
+    conda:
+        "../../envs/pysam.yaml"
+    script:
+        "../../scripts/coverage_table.py"
+
+rule mock_blast_ha:
+    input:
+        flag="tests/integration2b/work/{sample}/coverage_flags/HA.flag"
+    output:
+        txt="tests/integration2b/work/{sample}/blast/HA.blast.txt"
+    run:
+        out = Path(output.txt)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        flag = Path(input.flag).read_text(encoding="utf-8").strip()
+        if flag != "PASS" or wildcards.sample == "no_hit":
+            out.write_text("", encoding="utf-8")
+        elif wildcards.sample == "length_warning":
+            out.write_text(
+                "qHA\tACC_WARN\tH5 influenza warning fixture\t99.883\t1704\t1909\t1\t1704\t1\t1704\t0\t3000\n",
+                encoding="utf-8",
+            )
+        else:
+            out.write_text(
+                "qHA\tACC_HIGH\tH5 influenza high fixture\t99.900\t1700\t1700\t1\t1700\t1\t1700\t0\t3000\n",
+                encoding="utf-8",
+            )
+
+rule summarize_blast:
+    input:
+        blast_files=lambda wc: [f"tests/integration2b/work/{wc.sample}/blast/HA.blast.txt"],
+        flags=lambda wc: [f"tests/integration2b/work/{wc.sample}/coverage_flags/{s}.flag" for s in SEGMENTS]
+    output:
+        csv="tests/integration2b/work/{sample}/summary/blast_top_hits.csv"
+    params:
+        min_identity=95.0,
+        min_query_coverage=90.0
+    conda:
+        "../../envs/py-tools.yaml"
+    script:
+        "../../scripts/summarize_blast.py"
