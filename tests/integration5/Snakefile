@@ -1,0 +1,117 @@
+from pathlib import Path
+
+HERE = Path(workflow.basedir).resolve()
+WORK = HERE / "work"
+
+rule all:
+    input:
+        WORK / "medaka" / "tool_version.txt",
+        WORK / "medaka" / "model.tsv",
+        WORK / "medaka" / "HA" / "inference.status.tsv",
+        WORK / "medaka" / "HA" / "consensus.status.tsv",
+        WORK / "medaka" / "NA" / "inference.status.tsv",
+        WORK / "medaka" / "NA" / "consensus.status.tsv"
+
+rule medaka_tool_smoke:
+    output:
+        version=WORK / "medaka" / "tool_version.txt"
+    conda:
+        "../../envs/medaka.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "$(dirname {output.version:q})"
+        medaka --version > {output.version:q} 2>&1
+        test -s {output.version:q}
+        """
+
+rule resolve_model:
+    input:
+        fastq=WORK / "data" / "smoke.fastq.gz"
+    output:
+        model=WORK / "medaka" / "model.tsv"
+    shell:
+        r"""
+        set -euo pipefail
+        python scripts/resolve_medaka_model.py \
+          --fastq {input.fastq:q} \
+          --output {output.model:q} \
+          --max-records 10
+        """
+
+# These two rules exercise the exact state transitions used by the production
+# Medaka rules without running neural-network inference. HA represents a
+# QC-passing segment with a deliberately FAILED inference status so that
+# fail-soft consensus fallback can be verified. NA represents SKIPPED_QC.
+
+rule ha_inference_status_fixture:
+    input:
+        model=WORK / "medaka" / "model.tsv",
+        flag=WORK / "coverage_flags" / "HA.flag"
+    output:
+        features=WORK / "medaka" / "HA" / "features.hdf",
+        status=WORK / "medaka" / "HA" / "inference.status.tsv"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "$(dirname {output.features:q})"
+        model="$(awk -F '\t' 'NR == 2 {{print $3}}' {input.model:q})"
+        : > {output.features:q}
+        printf 'status\tmodel_source\tmodel\treason\nFAILED\tFASTQ metadata\t%s\tmedaka_inference_failed\n' \
+          "$model" > {output.status:q}
+        """
+
+rule ha_consensus_fallback:
+    input:
+        features=WORK / "medaka" / "HA" / "features.hdf",
+        inference_status=WORK / "medaka" / "HA" / "inference.status.tsv",
+        fasta=WORK / "irma" / "HA.fasta",
+        flag=WORK / "coverage_flags" / "HA.flag"
+    output:
+        consensus=WORK / "medaka" / "HA" / "consensus.fasta",
+        status=WORK / "medaka" / "HA" / "consensus.status.tsv"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "$(dirname {output.consensus:q})"
+        inference_status="$(awk -F '\t' 'NR == 2 {{print $1}}' {input.inference_status:q})"
+
+        if ! grep -q '^PASS$' {input.flag:q}; then
+            : > {output.consensus:q}
+            echo -e "status\tconsensus_source\treason\nSKIPPED_QC\tNONE\tsegment_qc_failed" > {output.status:q}
+        elif [[ "$inference_status" == "FAILED" ]]; then
+            cp {input.fasta:q} {output.consensus:q}
+            echo -e "status\tconsensus_source\treason\nFAILED\tIRMA_FALLBACK\tmedaka_inference_failed" > {output.status:q}
+        else
+            exit 1
+        fi
+        """
+
+rule na_skipped_qc:
+    input:
+        model=WORK / "medaka" / "model.tsv",
+        fasta=WORK / "irma" / "NA.fasta",
+        flag=WORK / "coverage_flags" / "NA.flag"
+    output:
+        features=WORK / "medaka" / "NA" / "features.hdf",
+        inference_status=WORK / "medaka" / "NA" / "inference.status.tsv",
+        consensus=WORK / "medaka" / "NA" / "consensus.fasta",
+        consensus_status=WORK / "medaka" / "NA" / "consensus.status.tsv"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "$(dirname {output.features:q})"
+        model="$(awk -F '\t' 'NR == 2 {{print $3}}' {input.model:q})"
+
+        if grep -q '^PASS$' {input.flag:q}; then
+            exit 1
+        fi
+
+        : > {output.features:q}
+        printf 'status\tmodel_source\tmodel\treason\nSKIPPED_QC\tFASTQ metadata\t%s\tsegment_qc_failed\n' \
+          "$model" > {output.inference_status:q}
+
+        : > {output.consensus:q}
+        echo -e "status\tconsensus_source\treason\nSKIPPED_QC\tNONE\tsegment_qc_failed" \
+          > {output.consensus_status:q}
+        """
