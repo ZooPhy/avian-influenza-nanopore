@@ -26,13 +26,14 @@ Most tools run in rule-specific Conda environments. IRMA runs in a container sel
 - IRMA `FLU-minion` assembly
 - Segment-level QC using depth, breadth-at-depth, expected-length, and N-content criteria
 - Medaka consensus polishing and variant calling
-- BLAST-based segment identification
+- BLAST-based segment identification with identity/query-coverage evidence and confidence classification
 - H5N1 analytical screening
 - GenoFLU genotype assignment
 - VADR sequence annotation and validation
 - Interactive sample-level HTML reports
 - Interactive sequencing-run summary report
-- Portable `.wings` report bundles containing the run summary and all sample reports
+- Portable `.wings` report bundles containing the run summary, all sample reports, and embedded run-level provenance
+- Run-level provenance capturing workflow state, configuration hashes, environment hashes, runtime details, and BLAST database provenance
 - Browser-based local report viewing at `wings.scotchlab.org` with no sequencing-data upload
 - Apple Silicon and Linux ARM64 support
 - Docker, Apptainer, Singularity, or local IRMA execution
@@ -85,7 +86,8 @@ Interactive HTML reports
     +--> Validated sample metadata
     +--> Sample report
     +--> Run summary report
-    +--> Portable WINGS report bundle (.wings)
+    +--> Run-level provenance (TSV + JSON)
+    +--> Portable WINGS report bundle (.wings; provenance embedded)
 ```
 
 NanoPlot is also available as an optional raw-read quality-control target.
@@ -123,6 +125,7 @@ NanoPlot is also available as an optional raw-read quality-control target.
 │   ├── summarize_blast.py
 │   ├── sample_summary.qmd
 │   ├── run_summary.qmd
+│   ├── write_run_provenance.py
 │   └── report/
 │       ├── escape-report.html
 │       ├── escape-report.js
@@ -136,6 +139,7 @@ NanoPlot is also available as an optional raw-read quality-control target.
 ├── resources/
 │   ├── fluA_reference.fasta.zip      # downloaded resource; not committed
 │   └── flu_db/                       # generated BLAST database; not committed
+│       └── database_manifest.tsv     # BLAST database provenance manifest
 ├── results/                          # generated outputs; not committed
 ├── README.md
 └── .gitignore
@@ -287,6 +291,7 @@ The script:
 4. Removes an older database with the same prefix.
 5. Builds a nucleotide BLAST database.
 6. Writes the database under `resources/flu_db/`.
+7. Writes `resources/flu_db/database_manifest.tsv` with the source release, archive and FASTA SHA-256 hashes, `makeblastdb` version, BLAST database format version, build method, container image, and database prefix.
 
 By default, the reference archive is obtained from the `v0.1.0` release of `ZooPhy/apgap-influenza-pipeline`. The source can be changed with environment variables when needed.
 
@@ -300,10 +305,11 @@ resources/
     ├── fluA_db.nhr
     ├── fluA_db.nin
     ├── fluA_db.nsq
+    ├── database_manifest.tsv
     └── ...
 ```
 
-The script tries the following database-building methods in order:
+The default container image for database construction is pinned to `ncbi/blast-static:2.17.0`. The script tries the following database-building methods in order:
 
 1. local `makeblastdb`
 2. Docker
@@ -441,6 +447,10 @@ irma_module: "FLU-minion"
 irma_runtime: "docker"
 
 blast_db: "resources/flu_db/fluA_db"
+blast_min_identity: 95.0
+blast_min_query_coverage: 90.0
+blast_max_target_seqs: 10
+blast_max_hsps: 1
 
 medaka_model: null
 medaka_fail_soft: true
@@ -475,6 +485,10 @@ irma_module: "FLU-minion"
 irma_runtime: "apptainer"
 
 blast_db: "resources/flu_db/fluA_db"
+blast_min_identity: 95.0
+blast_min_query_coverage: 90.0
+blast_max_target_seqs: 10
+blast_max_hsps: 1
 
 medaka_model: null
 medaka_fail_soft: true
@@ -658,11 +672,13 @@ results/<sample>/summary/<sample>.sample_summary.tsv
 results/<sample>/summary/<sample>.sample_summary.html
 ```
 
-Validated run-level metadata outputs include:
+Validated run-level metadata and provenance outputs include:
 
 ```text
 results/metadata/validated_metadata.tsv
 results/metadata/metadata_validation.tsv
+results/run_summary/run_provenance.tsv
+results/run_summary/run_provenance.json
 ```
 
 The sequencing-run report is written to:
@@ -677,7 +693,20 @@ A portable WINGS report bundle containing the run summary and all sample reports
 results/wings_report_bundle.wings
 ```
 
-The `.wings` bundle is a self-contained JSON report package intended for browser-based viewing. It contains rendered HTML reports, not the raw sequencing reads or intermediate analysis files.
+The `.wings` bundle is a self-contained JSON report package intended for browser-based viewing. It contains rendered HTML reports plus the embedded `run_provenance.json` record, but not the raw sequencing reads or intermediate analysis files.
+
+## Run-level provenance
+
+WINGS writes machine-readable provenance for each completed run to:
+
+```text
+results/run_summary/run_provenance.tsv
+results/run_summary/run_provenance.json
+```
+
+The record captures the WINGS Git commit, branch and dirty/clean state; SHA-256 hashes of the `Snakefile` and active `config.yaml`; Snakemake, Python, operating-system and architecture information; the configured IRMA, Medaka, VADR, QC and BLAST settings; the BLAST database manifest and its checksum; and SHA-256 hashes of the Conda environment YAML files. The JSON provenance record is embedded directly in `results/wings_report_bundle.wings`, so the portable bundle carries its computational provenance with the rendered reports.
+
+For a formal reproducible analysis, generate provenance from a clean committed repository state so `workflow.git_dirty` is `false`.
 
 ## Reports
 
@@ -725,7 +754,7 @@ snakemake results/wings_report_bundle.wings \
   --resources mem_mb=90000 kaleido=1
 ```
 
-The resulting `results/wings_report_bundle.wings` file contains the rendered run summary and all rendered sample reports in a single portable package. It can be opened at `wings.scotchlab.org` by selecting or dragging the `.wings` file into the report viewer. The browser reads the bundle locally; the sequencing results are not uploaded to the WINGS website.
+The resulting `results/wings_report_bundle.wings` file contains the rendered run summary, all rendered sample reports, and the run-level provenance JSON in a single portable package. It can be opened at `wings.scotchlab.org` by selecting or dragging the `.wings` file into the report viewer. The browser reads the bundle locally; the sequencing results are not uploaded to the WINGS website.
 
 For a public demonstration, a deliberately selected example bundle can be placed at:
 
@@ -805,6 +834,28 @@ The per-segment statistics record the individual `coverage_status`, `length_stat
 Only segments passing the hard segment-QC criteria proceed through Medaka and BLAST analysis; an upper-length warning alone does not block downstream analysis.
 
 For each segment, WINGS selects a normalized IRMA candidate deterministically and records the candidate count, selection status, selected contig, and selection reason in the manifest and segment QC outputs. When IRMA produces more than one candidate for a segment, the selected candidate remains eligible for the normal hard QC gate, but the sample receives a `multiple_irma_candidates` review flag and the ambiguity is surfaced in sample- and run-level reports.
+
+## BLAST evidence and confidence
+
+For each QC-passing segment, WINGS runs `blastn` against the configured influenza A nucleotide database and retains up to `blast_max_target_seqs` subject sequences with at most `blast_max_hsps` HSPs per subject. The default settings are:
+
+```yaml
+blast_min_identity: 95.0
+blast_min_query_coverage: 90.0
+blast_max_target_seqs: 10
+blast_max_hsps: 1
+```
+
+The raw `results/<sample>/blast/<segment>.blast.txt` files retain the evidence rows. `results/<sample>/summary/blast_top_hits.csv` summarizes the top HSP for each segment with subject accession/title, percent identity, alignment length, query length, query coverage, E-value, bit score, and a confidence state. Query coverage is calculated as alignment length divided by query length for the selected top HSP; HSPs are not merged.
+
+BLAST summary states are:
+
+- `HIGH_CONFIDENCE`: a hit exists and meets both the identity and query-coverage thresholds.
+- `LOW_CONFIDENCE`: a hit exists but fails one or both thresholds.
+- `NO_HIT`: BLAST ran for a QC-passing segment but returned no hit.
+- `SKIPPED_QC`: BLAST was not run because the segment failed the upstream hard QC gate.
+
+The BLAST database provenance is recorded in `resources/flu_db/database_manifest.tsv` and is incorporated into the run-level provenance record.
 
 ## H5N1 screening
 
@@ -991,9 +1042,11 @@ Rerun the environment creation or complete workflow command.
 - Segment QC requires the configured depth, breadth-at-depth, minimum-length, and N-content criteria; by default this is median depth >=50x, >=95% of positions at >=50x, the configured segment-specific minimum length, and <=1% Ns. Consensus lengths above the configured upper guide generate a warning rather than a hard failure.
 - Rule-specific Conda environments are stored under `.snakemake/conda/`.
 - IRMA runs in Docker on macOS and in Apptainer or Singularity on the ARM64 cluster.
-- The BLAST reference archive, generated database, input reads, results, local configuration, and Snakemake working files should not be committed to Git.
+- The BLAST database build records source and build provenance in `resources/flu_db/database_manifest.tsv`; the default BLAST build image is pinned to `ncbi/blast-static:2.17.0`.
+- Run-level provenance is written to `results/run_summary/run_provenance.tsv` and `.json`, and the JSON record is embedded in the portable `.wings` bundle.
+- The BLAST reference archive, generated database, input reads, results, local configuration, and Snakemake working files should not be committed to Git. Commit the BLAST provenance manifest only when intentionally maintaining a fixed reference build record in the repository.
 - `results/wings_report_bundle.wings` is generated from local reports and should be treated as analysis output; do not publish it unless its contents are appropriate for public release.
-- Container tags and package versions should be pinned for a formal release after the validated versions are finalized.
+- Remaining reproducibility gaps should be addressed before a formal release: IRMA and VADR currently use mutable `latest` container tags by default, and the GenoFLU Conda environment does not yet pin a specific GenoFLU version.
 
 Recommended `.gitignore` entries:
 
