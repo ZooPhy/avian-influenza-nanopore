@@ -97,7 +97,6 @@ build_with_local_blast() {
     makeblastdb \
         -in "${FASTA}" \
         -dbtype nucl \
-        -blastdb_version "${BLAST_DB_VERSION}" \
         -out "${DB_PREFIX}"
 }
 
@@ -110,7 +109,6 @@ build_with_docker() {
         makeblastdb \
             -in "/workspace/resources/flu_db/fluA_reference.fasta" \
             -dbtype nucl \
-            -blastdb_version "${BLAST_DB_VERSION}" \
             -out "/workspace/resources/flu_db/fluA_db"
 }
 
@@ -122,7 +120,6 @@ build_with_apptainer() {
         makeblastdb \
             -in "/workspace/resources/flu_db/fluA_reference.fasta" \
             -dbtype nucl \
-            -blastdb_version "${BLAST_DB_VERSION}" \
             -out "/workspace/resources/flu_db/fluA_db"
 }
 
@@ -134,7 +131,6 @@ build_with_singularity() {
         makeblastdb \
             -in "/workspace/resources/flu_db/fluA_reference.fasta" \
             -dbtype nucl \
-            -blastdb_version "${BLAST_DB_VERSION}" \
             -out "/workspace/resources/flu_db/fluA_db"
 }
 
