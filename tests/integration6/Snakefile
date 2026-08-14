@@ -1,0 +1,121 @@
+from pathlib import Path
+
+HERE = Path(workflow.basedir).resolve()
+WORK = HERE / "work"
+
+rule all:
+    input:
+        WORK / "medaka" / "HA" / "features.hdf",
+        WORK / "medaka" / "HA" / "consensus.fasta",
+        WORK / "medaka" / "HA" / "inference.status.tsv",
+        WORK / "medaka" / "HA" / "consensus.status.tsv"
+
+rule resolve_model:
+    input:
+        fastq=WORK / "reads.fastq.gz"
+    output:
+        model=WORK / "medaka" / "model.tsv"
+    shell:
+        r"""
+        set -euo pipefail
+        python scripts/resolve_medaka_model.py \
+          --fastq {input.fastq:q} \
+          --output {output.model:q} \
+          --max-records 20
+        """
+
+rule align_reads:
+    input:
+        reads=WORK / "reads.fastq.gz",
+        reference=WORK / "HA.fasta"
+    output:
+        bam=WORK / "HA.bam",
+        bai=WORK / "HA.bam.bai"
+    conda:
+        "../../envs/medaka.yaml"
+    threads: 1
+    shell:
+        r"""
+        set -euo pipefail
+
+        minimap2 -ax map-ont -t {threads} {input.reference:q} {input.reads:q} \
+          | samtools sort -@ {threads} -o {output.bam:q}
+
+        samtools index {output.bam:q}
+        samtools quickcheck -v {output.bam:q}
+        """
+
+rule medaka_inference_real:
+    input:
+        bam=WORK / "HA.bam",
+        bai=WORK / "HA.bam.bai",
+        model=WORK / "medaka" / "model.tsv"
+    output:
+        features=WORK / "medaka" / "HA" / "features.hdf",
+        status=WORK / "medaka" / "HA" / "inference.status.tsv"
+    log:
+        WORK / "medaka" / "HA" / "medaka_inference.log"
+    conda:
+        "../../envs/medaka.yaml"
+    threads: 1
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "$(dirname {output.features:q})"
+
+        model="$(awk -F '\t' 'NR == 2 {{print $3}}' {input.model:q})"
+
+        if [[ -z "$model" ]]; then
+            echo -e "status\tmodel_source\tmodel\treason\nFAILED\tFASTQ metadata\t\tmodel resolution failed" \
+              > {output.status:q}
+            exit 1
+        fi
+
+        echo "Medaka consensus selector: $model" > {log:q}
+
+        medaka inference \
+          {input.bam:q} \
+          {output.features:q} \
+          --threads {threads} \
+          --model "$model" \
+          >> {log:q} 2>&1
+
+        test -s {output.features:q}
+
+        echo -e "status\tmodel_source\tmodel\treason\nSUCCESS\tFASTQ metadata\t$model\tinference_completed" \
+          > {output.status:q}
+        """
+
+rule medaka_sequence_real:
+    input:
+        features=WORK / "medaka" / "HA" / "features.hdf",
+        inference_status=WORK / "medaka" / "HA" / "inference.status.tsv",
+        reference=WORK / "HA.fasta"
+    output:
+        consensus=WORK / "medaka" / "HA" / "consensus.fasta",
+        status=WORK / "medaka" / "HA" / "consensus.status.tsv"
+    log:
+        WORK / "medaka" / "HA" / "medaka_sequence.log"
+    conda:
+        "../../envs/medaka.yaml"
+    threads: 1
+    shell:
+        r"""
+        set -euo pipefail
+
+        inference_status="$(awk -F '\t' 'NR == 2 {{print $1}}' {input.inference_status:q})"
+        [[ "$inference_status" == "SUCCESS" ]]
+        test -s {input.features:q}
+
+        medaka sequence \
+          --threads {threads} \
+          {input.features:q} \
+          {input.reference:q} \
+          {output.consensus:q} \
+          > {log:q} 2>&1
+
+        test -s {output.consensus:q}
+
+        echo -e "status\tconsensus_source\treason\nSUCCESS\tMEDAKA\tpolishing_completed" \
+          > {output.status:q}
+        """
