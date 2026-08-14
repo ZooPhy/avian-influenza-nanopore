@@ -1,0 +1,121 @@
+from pathlib import Path
+
+HERE = Path(workflow.basedir).resolve()
+WORK = HERE / "work"
+SEGMENTS = ("HA", "NA", "PB2", "PB1", "PA", "NP", "MP", "NS")
+
+rule all:
+    input:
+        WORK / "summary" / "blast_top_hits.csv"
+
+rule build_tiny_db:
+    input:
+        WORK / "reference.fasta"
+    output:
+        nin=WORK / "db" / "tiny.nin",
+        nhr=WORK / "db" / "tiny.nhr",
+        nsq=WORK / "db" / "tiny.nsq"
+    conda:
+        "../../envs/blast.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {WORK}/db
+        makeblastdb \
+          -in {input:q} \
+          -dbtype nucl \
+          -parse_seqids \
+          -out {WORK}/db/tiny \
+          > {WORK}/makeblastdb.log 2>&1
+        """
+
+rule blast_ha:
+    input:
+        query=WORK / "queries" / "HA.fasta",
+        flag=WORK / "flags" / "HA.flag",
+        db=rules.build_tiny_db.output
+    output:
+        txt=WORK / "blast" / "HA.blast.txt"
+    log:
+        WORK / "blast" / "HA.log"
+    conda:
+        "../../envs/blast.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "$(dirname {output.txt:q})"
+        if [[ ! -s {input.query:q} ]] || ! grep -q '^PASS$' {input.flag:q}; then
+            : > {output.txt:q}
+            exit 0
+        fi
+
+        blastn \
+          -query {input.query:q} \
+          -db {WORK}/db/tiny \
+          -outfmt '6 qseqid sacc stitle pident length qlen qstart qend sstart send evalue bitscore' \
+          -max_target_seqs 10 \
+          -max_hsps 1 \
+          -num_threads 1 \
+          2> {log:q} \
+        | LC_ALL=C sort -t $'\t' -k12,12gr -k11,11g -k4,4gr \
+        > {output.txt:q}
+        """
+
+rule blast_na_skipped:
+    input:
+        query=WORK / "queries" / "NA.fasta",
+        flag=WORK / "flags" / "NA.flag",
+        db=rules.build_tiny_db.output
+    output:
+        txt=WORK / "blast" / "NA.blast.txt"
+    log:
+        WORK / "blast" / "NA.log"
+    conda:
+        "../../envs/blast.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "$(dirname {output.txt:q})"
+        if [[ ! -s {input.query:q} ]] || ! grep -q '^PASS$' {input.flag:q}; then
+            echo "Segment did not pass segment QC or consensus is empty; BLAST skipped." > {log:q}
+            : > {output.txt:q}
+            exit 0
+        fi
+        exit 99
+        """
+
+rule prepare_other_segments:
+    output:
+        flags=expand(str(WORK / "flags" / "{segment}.flag"), segment=("PB2", "PB1", "PA", "NP", "MP", "NS")),
+        blasts=expand(str(WORK / "blast" / "{segment}.blast.txt"), segment=("PB2", "PB1", "PA", "NP", "MP", "NS"))
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {WORK}/flags {WORK}/blast
+        for segment in PB2 PB1 PA NP MP NS; do
+            printf 'FAIL\n' > {WORK}/flags/${{segment}}.flag
+            : > {WORK}/blast/${{segment}}.blast.txt
+        done
+        """
+
+rule summarize:
+    input:
+        blast_files=[
+            WORK / "blast" / "HA.blast.txt",
+            WORK / "blast" / "NA.blast.txt",
+            *[WORK / "blast" / f"{s}.blast.txt" for s in ("PB2", "PB1", "PA", "NP", "MP", "NS")],
+        ],
+        flags=[
+            WORK / "flags" / "HA.flag",
+            WORK / "flags" / "NA.flag",
+            *[WORK / "flags" / f"{s}.flag" for s in ("PB2", "PB1", "PA", "NP", "MP", "NS")],
+        ]
+    output:
+        csv=WORK / "summary" / "blast_top_hits.csv"
+    conda:
+        "../../envs/py-tools.yaml"
+    params:
+        min_identity=95.0,
+        min_query_coverage=90.0
+    script:
+        "summarize_wrapper.py"
