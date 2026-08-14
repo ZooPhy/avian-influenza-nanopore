@@ -344,7 +344,11 @@ if RUN_VADR:
     )
 
 if RUN_SUMMARY:
-    FINAL_TARGETS.append(f"{RESULTS}/run_summary/run_summary.html")
+    FINAL_TARGETS.extend([
+        f"{RESULTS}/run_summary/run_summary.html",
+        f"{RESULTS}/run_summary/run_provenance.tsv",
+        f"{RESULTS}/run_summary/run_provenance.json",
+    ])
 
 
 rule all:
@@ -1661,11 +1665,104 @@ rule genoflu:
         fi
         """
 # -----------------------------------------------------------------------------
+# Run-level provenance
+# -----------------------------------------------------------------------------
+rule run_provenance:
+    input:
+        config="config.yaml",
+        snakefile="Snakefile",
+        blast_manifest="resources/flu_db/database_manifest.tsv",
+        script="scripts/write_run_provenance.py",
+        envs=[
+            "envs/blast.yaml",
+            "envs/coverage.yaml",
+            "envs/fastplong.yaml",
+            "envs/genoflu.yaml",
+            "envs/irma.yaml",
+            "envs/medaka.yaml",
+            "envs/nanoplot.yaml",
+            "envs/porechop.yaml",
+            "envs/py-tools.yaml",
+            "envs/pysam.yaml",
+            "envs/reporting.yaml",
+            "envs/samtools.yaml",
+        ]
+    output:
+        tsv=f"{RESULTS}/run_summary/run_provenance.tsv",
+        json=f"{RESULTS}/run_summary/run_provenance.json"
+    params:
+        repo_root=".",
+        sample_count=len(SAMPLES),
+        snakemake_version=SNAKEMAKE_VERSION,
+        irma_image=IRMA_IMAGE,
+        irma_module=IRMA_MODULE,
+        irma_runtime=IRMA_RUNTIME,
+        vadr_image=VADR_IMAGE,
+        vadr_mkey=VADR_MKEY,
+        vadr_runtime=VADR_RUNTIME,
+        medaka_model=MEDAKA_MODEL or "AUTO",
+        medaka_model_records=MEDAKA_MODEL_RECORDS,
+        medaka_fail_soft="true" if MEDAKA_FAIL_SOFT else "false",
+        coverage_min_depth=COVERAGE_MIN,
+        coverage_min_breadth=COVERAGE_MIN_BREADTH,
+        segment_max_n_fraction=SEGMENT_MAX_N_FRACTION,
+        blast_min_identity=BLAST_MIN_IDENTITY,
+        blast_min_query_coverage=BLAST_MIN_QUERY_COVERAGE,
+        blast_max_target_seqs=BLAST_MAX_TARGET_SEQS,
+        blast_max_hsps=BLAST_MAX_HSPS
+    conda:
+        "envs/py-tools.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+        python {input.script:q} \
+          --output-tsv {output.tsv:q} \
+          --output-json {output.json:q} \
+          --repo-root {params.repo_root:q} \
+          --config {input.config:q} \
+          --snakefile {input.snakefile:q} \
+          --blast-manifest {input.blast_manifest:q} \
+          --sample-count {params.sample_count} \
+          --snakemake-version {params.snakemake_version:q} \
+          --irma-image {params.irma_image:q} \
+          --irma-module {params.irma_module:q} \
+          --irma-runtime {params.irma_runtime:q} \
+          --vadr-image {params.vadr_image:q} \
+          --vadr-mkey {params.vadr_mkey:q} \
+          --vadr-runtime {params.vadr_runtime:q} \
+          --medaka-model {params.medaka_model:q} \
+          --medaka-model-records {params.medaka_model_records} \
+          --medaka-fail-soft {params.medaka_fail_soft:q} \
+          --coverage-min-depth {params.coverage_min_depth} \
+          --coverage-min-breadth {params.coverage_min_breadth} \
+          --segment-max-n-fraction {params.segment_max_n_fraction} \
+          --blast-min-identity {params.blast_min_identity} \
+          --blast-min-query-coverage {params.blast_min_query_coverage} \
+          --blast-max-target-seqs {params.blast_max_target_seqs} \
+          --blast-max-hsps {params.blast_max_hsps} \
+          --env blast=envs/blast.yaml \
+          --env coverage=envs/coverage.yaml \
+          --env fastplong=envs/fastplong.yaml \
+          --env genoflu=envs/genoflu.yaml \
+          --env irma=envs/irma.yaml \
+          --env medaka=envs/medaka.yaml \
+          --env nanoplot=envs/nanoplot.yaml \
+          --env porechop=envs/porechop.yaml \
+          --env py-tools=envs/py-tools.yaml \
+          --env pysam=envs/pysam.yaml \
+          --env reporting=envs/reporting.yaml \
+          --env samtools=envs/samtools.yaml
+        """
+
+
+# -----------------------------------------------------------------------------
 # Portable WINGS report bundle
 # -----------------------------------------------------------------------------
 rule wings_report_bundle:
     input:
         run_summary=f"{RESULTS}/run_summary/run_summary.html",
+        provenance_tsv=f"{RESULTS}/run_summary/run_provenance.tsv",
+        provenance_json=f"{RESULTS}/run_summary/run_provenance.json",
         reports=expand(
             f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.html",
             sample=SAMPLES,
@@ -1678,6 +1775,7 @@ rule wings_report_bundle:
         set -euo pipefail
         python {input.builder:q} \
           --run-summary {input.run_summary:q} \
+          --provenance {input.provenance_json:q} \
           --output {output.bundle:q} \
           {input.reports:q}
         """

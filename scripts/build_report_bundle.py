@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Build a portable WINGS report bundle from rendered HTML reports.
 
-The resulting .wings file is JSON and contains only the rendered run-summary
-and sample-summary HTML files plus a small manifest. It is designed to be read
-locally in a web browser without uploading report contents to a server.
+The resulting .wings file is JSON and contains the rendered run-summary,
+sample-summary HTML files, run-level provenance, and a small manifest. It is
+designed to be read locally in a web browser without uploading report contents
+to a server.
 """
 
 from __future__ import annotations
@@ -39,7 +40,17 @@ def sample_id_from_path(path: Path) -> str:
     return sample_id
 
 
-def build_bundle(run_summary: Path, sample_reports: list[Path]) -> dict:
+def read_json(path: Path) -> dict:
+    if not path.is_file():
+        raise FileNotFoundError(f"JSON file not found: {path}")
+    with path.open(encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected a JSON object in: {path}")
+    return data
+
+
+def build_bundle(run_summary: Path, provenance: Path, sample_reports: list[Path]) -> dict:
     samples = {}
     for report_path in sample_reports:
         sample_id = sample_id_from_path(report_path)
@@ -62,6 +73,10 @@ def build_bundle(run_summary: Path, sample_reports: list[Path]) -> dict:
             "filename": run_summary.name,
             "html": read_text(run_summary),
         },
+        "provenance": {
+            "filename": provenance.name,
+            "data": read_json(provenance),
+        },
         "samples": samples,
     }
 
@@ -75,6 +90,12 @@ def parse_args() -> argparse.Namespace:
         required=True,
         type=Path,
         help="Rendered WINGS run_summary.html file",
+    )
+    parser.add_argument(
+        "--provenance",
+        required=True,
+        type=Path,
+        help="WINGS run-level provenance JSON file",
     )
     parser.add_argument(
         "--output",
@@ -93,7 +114,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    bundle = build_bundle(args.run_summary, args.sample_reports)
+    bundle = build_bundle(args.run_summary, args.provenance, args.sample_reports)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temp_output = args.output.with_suffix(args.output.suffix + ".tmp")
