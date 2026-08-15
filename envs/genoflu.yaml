@@ -4,5 +4,5 @@ channels:
   - bioconda
 dependencies:
   - python>=3.9
-  - genoflu
+  - genoflu=1.07
   - blast
