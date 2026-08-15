@@ -28,7 +28,7 @@ Most tools run in rule-specific Conda environments. IRMA runs in a container sel
 - Medaka consensus polishing and variant calling
 - BLAST-based segment identification with identity/query-coverage evidence and confidence classification
 - H5N1 analytical screening
-- GenoFLU genotype assignment
+- Conditional GenoFLU genotype assignment for H5N1-screen-positive samples
 - VADR sequence annotation and validation
 - Interactive sample-level HTML reports
 - Interactive sequencing-run summary report
@@ -69,17 +69,16 @@ Segment-level QC
     +--> Medaka consensus polishing
     +--> Medaka variant calling
     |
-    v
-BLAST segment identification
+    +--> BLAST segment identification
+    |        |
+    |        v
+    |    H5N1 screening
+    |        |
+    |        +--> GenoFLU genotype assignment
+    |             (only when the H5N1 screen is DETECTED)
     |
-    v
-H5N1 screening
-    |
-    v
-GenoFLU genotype assignment
-    |
-    v
-VADR annotation and validation
+    +--> VADR annotation and validation
+         (from segment-QC-qualified polished consensuses)
     |
     v
 Interactive HTML reports
@@ -456,6 +455,8 @@ medaka_model: null
 medaka_fail_soft: true
 
 run_genoflu: true
+run_vadr: true
+run_summary: true
 ```
 
 ### Linux ARM64 cluster example
@@ -494,9 +495,13 @@ medaka_model: null
 medaka_fail_soft: true
 
 run_genoflu: true
+run_vadr: true
+run_summary: true
 ```
 
 Use `irma_runtime: "singularity"` instead when Singularity is installed rather than Apptainer. `irma_runtime: "auto"` selects Apptainer, Singularity, Docker, or local IRMA in that order based on what is available.
+
+The `run_genoflu`, `run_vadr`, and `run_summary` settings control whether those analyses or run-level reporting outputs are requested as default workflow targets. Keep them set to `true` for a complete production run.
 
 ### Medaka model
 
@@ -712,7 +717,7 @@ For a formal reproducible analysis, generate provenance from a clean committed r
 
 ### Sample report
 
-Each sample report summarizes validated sample metadata, read filtering, segment recovery, coverage, BLAST assignments, H5N1 screening, GenoFLU results, VADR status, and review flags. Reports are generated as self-contained HTML and are also packaged into the portable `.wings` bundle for browser-based navigation.
+Each sample report summarizes validated sample metadata, read filtering, segment recovery, coverage, BLAST assignments, H5N1 screening, GenoFLU results when applicable, VADR status, and review flags. Reports are generated as self-contained HTML and are also packaged into the portable `.wings` bundle for browser-based navigation.
 
 Build one sample report with:
 
@@ -830,6 +835,8 @@ With these defaults, a segment passes the hard QC gate when **all** of the follo
 The segment-length bounds are configurable QC guardrails rather than subtype-confirmation criteria. The lower bound protects against truncated assemblies. The upper bound highlights unexpectedly long consensuses without automatically rejecting sequences that may contain valid terminal or assay-specific sequence. Bounds should be changed only when the assay design or validated biological targets justify different values.
 
 The per-segment statistics record the individual `coverage_status`, `length_status`, and `n_content_status` values as well as the final `overall_status`. The existing `results/<sample>/coverage_flags/<segment>.flag` path is retained for workflow compatibility, but its `PASS` now means that the segment passed the complete segment-QC criterion rather than coverage alone.
+
+If IRMA does not recover a segment, WINGS treats that absence as an explicit analytical state rather than a workflow error. The normalized IRMA manifest still contains a row for the segment with `status=MISSING`; `check_coverage` writes corresponding `MISSING` flag and statistics outputs; and the final `coverage.tsv` retains all eight influenza A segment rows. This allows incomplete genomes to proceed through reporting without fabricating FASTA or BAM files for unrecovered segments.
 
 Only segments passing the hard segment-QC criteria proceed through Medaka and BLAST analysis; an upper-length warning alone does not block downstream analysis.
 

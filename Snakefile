@@ -255,6 +255,20 @@ def fasta_path(wildcards):
     return str(path)
 
 
+def optional_genoflu_input(wildcards):
+    """Return GenoFLU output when enabled without scheduling GenoFLU when disabled."""
+    if RUN_GENOFLU:
+        return f"{RESULTS}/{wildcards.sample}/genoflu/GenoFLU.tsv"
+    return os.devnull
+
+
+def optional_vadr_log_input(wildcards):
+    """Return the VADR log when enabled without scheduling VADR when disabled."""
+    if RUN_VADR:
+        return f"{RESULTS}/{wildcards.sample}/vadr/{wildcards.sample}.vadr.log"
+    return os.devnull
+
+
 def blast_db_files(_wildcards):
     """Stage all files belonging to the configured BLAST database prefix."""
     prefix = Path(BLAST_DB)
@@ -1432,7 +1446,7 @@ rule sample_summary:
         coverage=f"{RESULTS}/{{sample}}/coverage/coverage.tsv",
         blast=f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv",
         h5n1=f"{RESULTS}/{{sample}}/genoflu/h5n1.flag",
-        genoflu=f"{RESULTS}/{{sample}}/genoflu/GenoFLU.tsv",
+        genoflu=optional_genoflu_input,
         consensus=f"{RESULTS}/{{sample}}/merged/consensus_all_segments.fasta"
     output:
         tsv=f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.tsv"
@@ -1451,8 +1465,8 @@ rule sample_summary_html:
         coverage=f"{RESULTS}/{{sample}}/coverage/coverage.tsv",
         blast=f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv",
         template="scripts/sample_summary.qmd",
-        genoflu=f"{RESULTS}/{{sample}}/genoflu/GenoFLU.tsv",
-        vadr_log=f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.log",
+        genoflu=optional_genoflu_input,
+        vadr_log=optional_vadr_log_input,
         medaka_inference_status=lambda wildcards: [
             f"{RESULTS}/{wildcards.sample}/medaka/{segment}/inference.status.tsv"
             for segment in segments_for_sample(wildcards)
@@ -1543,13 +1557,21 @@ rule run_summary_html:
             f"{RESULTS}/{{sample}}/coverage/coverage.tsv",
             sample=SAMPLES,
         ),
-        genoflu=expand(
-            f"{RESULTS}/{{sample}}/genoflu/GenoFLU.tsv",
-            sample=SAMPLES,
+        genoflu=(
+            expand(
+                f"{RESULTS}/{{sample}}/genoflu/GenoFLU.tsv",
+                sample=SAMPLES,
+            )
+            if RUN_GENOFLU
+            else []
         ),
-        vadr_logs=expand(
-            f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.log",
-            sample=SAMPLES,
+        vadr_logs=(
+            expand(
+                f"{RESULTS}/{{sample}}/vadr/{{sample}}.vadr.log",
+                sample=SAMPLES,
+            )
+            if RUN_VADR
+            else []
         ),
         medaka_inference_status=expand(
             f"{RESULTS}/{{sample}}/medaka/{{segment}}/inference.status.tsv",

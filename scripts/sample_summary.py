@@ -2,6 +2,7 @@
 
 import csv
 import json
+import os
 from pathlib import Path
 
 
@@ -75,15 +76,23 @@ def read_h5n1_flag(path: Path) -> str:
 
 
 def read_genoflu(path: Path) -> str:
+    # The Snakefile passes os.devnull when GenoFLU is disabled by configuration.
+    if str(path) == os.devnull:
+        return "DISABLED_BY_CONFIG"
+
     if not path.exists() or path.stat().st_size == 0:
         return "MISSING"
 
-    lines = [line.strip() for line in path.read_text().splitlines() if line.strip()]
+    lines = [
+        line.strip()
+        for line in path.read_text().splitlines()
+        if line.strip()
+    ]
     if not lines:
         return "MISSING"
 
-    if len(lines) == 2 and lines[0].startswith("sample\tstatus"):
-        return lines[1].split("\t", 1)[-1]
+    if len(lines) == 2 and lines[0].startswith("sample	status"):
+        return lines[1].split("	", 1)[-1]
 
     return "COMPLETED"
 
