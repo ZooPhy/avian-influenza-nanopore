@@ -1,0 +1,12 @@
+reads_dir: tests/integration8/work/data
+results_dir: tests/integration8/work/results
+metadata_file: tests/integration8/work/metadata.tsv
+metadata_require_all_samples: false
+
+coverage_min_depth: 50
+coverage_min_breadth: 0.95
+segment_max_n_fraction: 0.01
+
+run_genoflu: false
+run_vadr: false
+run_summary: false

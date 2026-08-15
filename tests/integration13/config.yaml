@@ -1,0 +1,41 @@
+reads_dir: tests/integration13/work/data
+results_dir: tests/integration13/work/results
+metadata_file: tests/integration13/work/metadata.tsv
+metadata_require_all_samples: true
+
+coverage_min_depth: 50
+coverage_min_breadth: 0.95
+segment_max_n_fraction: 0.01
+
+porechop_command: porechop_abi
+porechop_mem_mb: 8000
+porechop_time_min: 30
+
+fastplong_mean_quality: 10
+fastplong_min_length: 500
+fastplong_threads: 1
+
+nanoplot_threads: 1
+nanoplot_install_chrome: false
+
+irma_runtime: local
+irma_threads: 1
+
+medaka_threads: 1
+medaka_fail_soft: false
+medaka_model_records: 20
+
+blast_db: tests/integration13/work/blastdb/phase13
+blast_min_identity: 95.0
+blast_min_query_coverage: 90.0
+blast_max_target_seqs: 10
+blast_max_hsps: 1
+blast_threads: 1
+
+vadr_runtime: local
+vadr_threads: 1
+vadr_fail_soft: false
+
+run_genoflu: true
+run_vadr: true
+run_summary: true

@@ -1,0 +1,7 @@
+reads_dir: tests/integration3/work/data
+results_dir: tests/integration3/work/results
+metadata_file: tests/integration3/work/metadata.tsv
+metadata_require_all_samples: false
+run_genoflu: true
+run_vadr: false
+run_summary: true

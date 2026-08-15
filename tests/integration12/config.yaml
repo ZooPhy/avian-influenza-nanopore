@@ -1,0 +1,17 @@
+reads_dir: tests/integration12/work/data
+results_dir: tests/integration12/work/results
+metadata_file: tests/integration12/work/metadata.tsv
+metadata_require_all_samples: false
+
+coverage_min_depth: 50
+coverage_min_breadth: 0.95
+segment_max_n_fraction: 0.01
+
+blast_min_identity: 95.0
+blast_min_query_coverage: 90.0
+blast_max_target_seqs: 10
+blast_max_hsps: 1
+
+run_genoflu: false
+run_vadr: false
+run_summary: true

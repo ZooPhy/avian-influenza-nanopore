@@ -1,0 +1,17 @@
+reads_dir: "tests/integration/work/data"
+reads_pattern: "{sample}.fastq.gz"
+results_dir: "tests/integration/work/results"
+
+coverage_min_depth: 50
+coverage_min_breadth: 0.95
+segment_max_n_fraction: 0.01
+
+blast_min_identity: 95.0
+blast_min_query_coverage: 90.0
+blast_max_target_seqs: 10
+blast_max_hsps: 1
+
+medaka_fail_soft: true
+run_genoflu: true
+run_vadr: false
+run_summary: false
