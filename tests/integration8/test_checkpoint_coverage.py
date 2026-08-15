@@ -10,6 +10,9 @@ HERE = REPO_ROOT / "tests" / "integration8"
 WORK = HERE / "work"
 RESULTS = WORK / "results"
 SAMPLE = "qc_checkpoint"
+ALL_SEGMENTS = ("HA", "NA", "PB2", "PB1", "PA", "NP", "MP", "NS")
+MISSING_SEGMENT = "MP"
+READY_SEGMENTS = tuple(segment for segment in ALL_SEGMENTS if segment != MISSING_SEGMENT)
 
 
 def read_tsv_rows(path: Path) -> dict[str, dict[str, str]]:
@@ -28,7 +31,7 @@ def test_production_checkpoint_to_coverage_qc():
     )
 
     # Build valid IRMA-like BAM/FASTA artifacts with the production coverage
-    # environment, but do not run IRMA itself.
+    # environment, but do not run IRMA itself. MP is intentionally absent.
     subprocess.run(
         [
             "snakemake",
@@ -77,15 +80,30 @@ def test_production_checkpoint_to_coverage_qc():
     manifest = read_tsv_rows(
         RESULTS / SAMPLE / "irma" / "manifest.tsv"
     )
-    assert list(manifest) == ["HA", "NA", "PB2", "PB1", "PA", "NP", "MP", "NS"]
-    for segment, row in manifest.items():
+    assert list(manifest) == list(ALL_SEGMENTS)
+
+    for segment in READY_SEGMENTS:
+        row = manifest[segment]
         assert row["status"] == "READY", segment
         assert row["candidate_count"] == "1", segment
         assert row["selection_status"] == "UNIQUE", segment
 
+    missing_manifest = manifest[MISSING_SEGMENT]
+    assert missing_manifest["status"] == "MISSING"
+    assert missing_manifest["candidate_count"] == "0"
+    assert missing_manifest["selection_status"] == "MISSING"
+
+    # The normalizer must not invent placeholder assembly files for a segment
+    # that was genuinely absent from the IRMA-like project.
+    missing_segment_dir = RESULTS / SAMPLE / "irma" / "segments" / MISSING_SEGMENT
+    assert not (missing_segment_dir / "consensus.fasta").exists()
+    assert not (missing_segment_dir / "alignment.bam").exists()
+
     coverage = read_tsv_rows(
         RESULTS / SAMPLE / "coverage" / "coverage.tsv"
     )
+    assert list(coverage) == list(ALL_SEGMENTS)
+    assert len(coverage) == 8
 
     # Straight PASS.
     assert coverage["HA"]["coverage_status"] == "PASS"
@@ -122,8 +140,22 @@ def test_production_checkpoint_to_coverage_qc():
     assert coverage["PA"]["overall_status"] == "FAIL"
     assert float(coverage["PA"]["n_fraction"]) > 0.01
 
-    for segment in ("NP", "MP", "NS"):
+    # NP and NS remain ordinary passing segments. NS is intentionally retained
+    # to demonstrate that the missing-segment regression is not NS-specific.
+    for segment in ("NP", "NS"):
         assert coverage[segment]["overall_status"] == "PASS", segment
+
+    # The deliberately absent MP segment must survive the production QC path as
+    # explicit MISSING data rather than causing Snakemake DAG construction to fail.
+    missing_coverage = coverage[MISSING_SEGMENT]
+    assert missing_coverage["assembly_status"] == "MISSING"
+    assert missing_coverage["coverage_status"] == "MISSING"
+    assert missing_coverage["length_status"] == "MISSING"
+    assert missing_coverage["n_content_status"] == "MISSING"
+    assert missing_coverage["overall_status"] == "MISSING"
+    assert missing_coverage["coverage_flag"] == "MISSING"
+    assert missing_coverage["candidate_count"] == "0"
+    assert missing_coverage["selection_status"] == "MISSING"
 
     expected_flags = {
         "HA": "PASS",
@@ -132,7 +164,7 @@ def test_production_checkpoint_to_coverage_qc():
         "PB1": "FAIL",
         "PA": "FAIL",
         "NP": "PASS",
-        "MP": "PASS",
+        "MP": "MISSING",
         "NS": "PASS",
     }
     for segment, expected in expected_flags.items():
@@ -145,4 +177,4 @@ def test_production_checkpoint_to_coverage_qc():
         RESULTS / SAMPLE / "irma" / "normalize.log"
     ).read_text(encoding="utf-8", errors="replace")
     assert "ESCAPE_STATUS=IRMA_NORMALIZATION_COMPLETED" in normalize_log
-    assert "ESCAPE_READY_SEGMENT_COUNT=8" in normalize_log
+    assert "ESCAPE_READY_SEGMENT_COUNT=7" in normalize_log

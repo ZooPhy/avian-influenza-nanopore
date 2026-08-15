@@ -5,7 +5,9 @@ WORK = HERE / "work"
 SOURCE = WORK / "source"
 PROJECT = WORK / "results" / "qc_checkpoint" / "irma" / "project"
 
-SEGMENTS = ("HA", "NA", "PB2", "PB1", "PA", "NP", "MP", "NS")
+ALL_SEGMENTS = ("HA", "NA", "PB2", "PB1", "PA", "NP", "MP", "NS")
+MISSING_SEGMENT = "MP"
+SEGMENTS = tuple(segment for segment in ALL_SEGMENTS if segment != MISSING_SEGMENT)
 
 
 rule all:
@@ -21,6 +23,8 @@ rule build_irma_like_project:
         project=directory(PROJECT)
     conda:
         "../../envs/coverage.yaml"
+    params:
+        segments=" ".join(SEGMENTS)
     shell:
         r"""
         set -euo pipefail
@@ -30,7 +34,7 @@ rule build_irma_like_project:
           {output.project:q}/assemblies \
           {output.project:q}/alignments
 
-        for segment in HA NA PB2 PB1 PA NP MP NS; do
+        for segment in {params.segments}; do
             fasta={SOURCE}/"$segment".fasta
             sam={SOURCE}/"$segment".sam
 

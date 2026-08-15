@@ -221,8 +221,9 @@ def samtools_depths(bam_path: Path) -> tuple[list[int], str]:
 def main() -> None:
     segments_dir = Path(snakemake.input.segments_dir)
     manifest_path = Path(snakemake.input.manifest)
-    consensus_path = Path(snakemake.input.consensus)
     segment = str(snakemake.wildcards.segment)
+    consensus_path = segments_dir / segment / "consensus.fasta"
+    bam_path = segments_dir / segment / "alignment.bam"
     flag_out = Path(snakemake.output.flag)
     stats_out = Path(snakemake.output.stats)
     threshold = float(snakemake.params.min_median_depth)
@@ -239,7 +240,6 @@ def main() -> None:
         manifest_row.get("selection_status")
         or ("MULTIPLE_CANDIDATES" if candidate_count > 1 else "UNIQUE" if candidate_count == 1 else "MISSING")
     )
-    bam_path = segments_dir / segment / "alignment.bam"
 
     common = dict(
         segment=segment,

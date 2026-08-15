@@ -777,8 +777,7 @@ checkpoint normalize_irma_outputs:
 rule check_coverage:
     input:
         segments_dir=irma_segments_dir,
-        manifest=irma_manifest_path,
-        consensus=fasta_path
+        manifest=irma_manifest_path
     output:
         flag=f"{RESULTS}/{{sample}}/coverage_flags/{{segment}}.flag",
         stats=f"{RESULTS}/{{sample}}/coverage_stats/{{segment}}.tsv"

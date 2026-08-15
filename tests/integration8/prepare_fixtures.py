@@ -10,6 +10,7 @@ WORK = ROOT / "tests" / "integration8" / "work"
 SOURCE = WORK / "source"
 DATA = WORK / "data"
 SAMPLE = "qc_checkpoint"
+MISSING_SEGMENT = "MP"
 
 SPECS = {
     "HA":  {"contig": "A_HA_H5",   "length": 1700, "depth": 60, "n_count": 0},
@@ -49,6 +50,11 @@ def main() -> None:
     DATA.mkdir(parents=True)
 
     for segment, spec in SPECS.items():
+        # MP is deliberately absent from the synthetic IRMA-like project so the
+        # production workflow must carry a genuine missing segment through QC.
+        if segment == MISSING_SEGMENT:
+            continue
+
         contig = spec["contig"]
         length = spec["length"]
         seq = consensus(length, spec["n_count"])
@@ -76,7 +82,10 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    print(f"Prepared Phase 8 source fixtures under {WORK}")
+    print(
+        f"Prepared Phase 8 source fixtures under {WORK}; "
+        f"intentionally missing segment={MISSING_SEGMENT}"
+    )
 
 
 if __name__ == "__main__":
