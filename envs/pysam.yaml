@@ -4,5 +4,5 @@ channels:
   - conda-forge
 dependencies:
   - python=3.10
-  - pysam
+  - pysam=0.24.0
   - numpy
