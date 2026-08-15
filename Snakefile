@@ -64,18 +64,18 @@ if "{sample}" not in READ_PATTERN:
     raise ValueError("config key 'reads_pattern' must contain the wildcard {sample}")
 
 
-def _discover_fastq_files(reads_dir: str):
-    paths = sorted(
-        (path for path in Path(reads_dir).glob("*.fastq.gz") if path.is_file()),
-        key=lambda path: path.name,
-    )
+def _discover_fastq_files(reads_dir: str, read_pattern: str):
+    """Discover FASTQ inputs from the configured Snakemake-style sample pattern."""
+    pattern = os.path.join(reads_dir, read_pattern)
+    samples = sorted(set(glob_wildcards(pattern).sample))
+
     return {
-        path.name.removesuffix(".fastq.gz"): str(path)
-        for path in paths
+        sample: pattern.format(sample=sample)
+        for sample in samples
     }
 
 
-SAMPLE_FASTQ = _discover_fastq_files(READS)
+SAMPLE_FASTQ = _discover_fastq_files(READS, READ_PATTERN)
 SAMPLES = sorted(SAMPLE_FASTQ)
 
 COVERAGE_MIN = float(config.get("coverage_min_depth", 50.0))
