@@ -441,7 +441,7 @@ fastplong_threads: 4
 metadata_file: "metadata.tsv"
 metadata_require_all_samples: true
 
-irma_image: "docker://ghcr.io/cdcgov/irma:latest"
+irma_image: "docker://ghcr.io/cdcgov/irma:v1.3.5"
 irma_module: "FLU-minion"
 irma_runtime: "docker"
 
@@ -456,6 +456,7 @@ medaka_fail_soft: true
 
 run_genoflu: true
 run_vadr: true
+vadr_image: "docker://staphb/vadr:1.7"
 run_summary: true
 ```
 
@@ -481,7 +482,7 @@ fastplong_threads: 4
 metadata_file: "metadata.tsv"
 metadata_require_all_samples: true
 
-irma_image: "docker://ghcr.io/cdcgov/irma:latest"
+irma_image: "docker://ghcr.io/cdcgov/irma:v1.3.5"
 irma_module: "FLU-minion"
 irma_runtime: "apptainer"
 
@@ -496,6 +497,7 @@ medaka_fail_soft: true
 
 run_genoflu: true
 run_vadr: true
+vadr_image: "docker://staphb/vadr:1.7"
 run_summary: true
 ```
 
@@ -1053,7 +1055,7 @@ Rerun the environment creation or complete workflow command.
 - Run-level provenance is written to `results/run_summary/run_provenance.tsv` and `.json`, and the JSON record is embedded in the portable `.wings` bundle.
 - The BLAST reference archive, generated database, input reads, results, local configuration, and Snakemake working files should not be committed to Git. Commit the BLAST provenance manifest only when intentionally maintaining a fixed reference build record in the repository.
 - `results/wings_report_bundle.wings` is generated from local reports and should be treated as analysis output; do not publish it unless its contents are appropriate for public release.
-- Remaining reproducibility gaps should be addressed before a formal release: IRMA and VADR currently use mutable `latest` container tags by default, and the GenoFLU Conda environment does not yet pin a specific GenoFLU version.
+- IRMA and VADR use pinned container tags (`ghcr.io/cdcgov/irma:v1.3.5` and `staphb/vadr:1.7`) for reproducibility. The GenoFLU Conda environment should also pin a specific GenoFLU version before a formal release.
 
 Recommended `.gitignore` entries:
 

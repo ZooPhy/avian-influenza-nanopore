@@ -124,7 +124,7 @@ for segment, default_bounds in DEFAULT_SEGMENT_EXPECTED_LENGTHS.items():
         )
     SEGMENT_EXPECTED_LENGTHS[segment] = (minimum, maximum)
 
-IRMA_IMAGE = str(config.get("irma_image", "docker://ghcr.io/cdcgov/irma:latest"))
+IRMA_IMAGE = str(config.get("irma_image", "docker://ghcr.io/cdcgov/irma:v1.3.5"))
 IRMA_MODULE = str(config.get("irma_module", "FLU-minion"))
 IRMA_RUNTIME = str(config.get("irma_runtime", "auto")).strip().lower()
 
@@ -162,7 +162,7 @@ NANOPLOT_INSTALL_CHROME = as_bool(
 RUN_GENOFLU = as_bool(config.get("run_genoflu", True))
 RUN_VADR = as_bool(config.get("run_vadr", True))
 RUN_SUMMARY = as_bool(config.get("run_summary", True))
-VADR_IMAGE = str(config.get("vadr_image", "docker://staphb/vadr:latest"))
+VADR_IMAGE = str(config.get("vadr_image", "docker://staphb/vadr:1.7"))
 VADR_RUNTIME = str(config.get("vadr_runtime", "auto")).strip().lower()
 VADR_MKEY = str(config.get("vadr_mkey", "flu"))
 VADR_THREADS = int(config.get("vadr_threads", 1))
