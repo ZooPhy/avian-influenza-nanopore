@@ -219,29 +219,32 @@ def write_summary(
 
     metadata_fields = list(normalized_metadata)
     fieldnames = ["sample", *metadata_fields, *analytical_fields]
-
+    detected_segments = [
+        row["segment"]
+        for row in coverage_rows
+        if row.get("coverage_flag") != "MISSING"
+    ]
     row = {
-        "sample": sample,
-        **normalized_metadata,
-        **fastplong,
-        "segments_detected": len(coverage_rows),
-        "segments_pass": len(pass_segments),
-        "pass_segment_names": ",".join(pass_segments) or "NONE",
-        "failed_segment_names": ",".join(failed_segments) or "NONE",
-        "ha_contig": ha_contig,
-        "na_contig": na_contig,
-        "ha_median_depth": ha_median_depth,
-        "na_median_depth": na_median_depth,
-        "h5n1_screen": h5n1_status,
-        "genoflu_status": genoflu_status,
-        "consensus_segments": consensus_segments,
-        "multiple_irma_candidate_segments": ",".join(multiple_candidate_segments) or "NONE",
-        "multiple_irma_candidate_count": len(multiple_candidate_segments),
-        "max_irma_candidate_count": max_irma_candidate_count,
-        "review_flags": ";".join(review_flags) or "NONE",
-        "ha_top_blast_hit": blast_hits.get("HA", "NO_HIT"),
-        "na_top_blast_hit": blast_hits.get("NA", "NO_HIT"),
-    }
+    "sample": sample,
+    **normalized_metadata,
+    **fastplong,
+    "segments_detected": len(detected_segments),
+    "segments_pass": len(pass_segments),
+    "pass_segment_names": ",".join(pass_segments) or "NONE",
+    "failed_segment_names": ",".join(failed_segments) or "NONE",
+    "ha_contig": ha_contig,
+    "na_contig": na_contig,
+    "ha_median_depth": ha_median_depth,
+    "na_median_depth": na_median_depth,
+    "h5n1_screen": h5n1_status,
+    "genoflu_status": genoflu_status,
+    "consensus_segments": consensus_segments,
+    "multiple_irma_candidate_segments": ",".join(multiple_candidate_segments) or "NONE",
+    "multiple_irma_candidate_count": len(multiple_candidate_segments),
+    "max_irma_candidate_count": max_irma_candidate_count,
+    "review_flags": ";".join(review_flags) or "NONE",
+    "ha_top_blast_hit": blast_hits.get("HA", "NO_HIT"),
+    "na_top_blast_hit": blast_hits.get("NA", "NO_HIT"),}
 
     with output_path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
