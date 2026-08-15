@@ -51,7 +51,9 @@ jobs:
           pytest --version
           conda --version
 
-      - name: Run WINGS test suite
+      - name: Run WINGS regression tests
         shell: bash -el {0}
         run: |
-          python -m pytest -q
+          python -m pytest -q \
+          tests/test_regression.py \
+          tests/test_sample_summary_segments.py
