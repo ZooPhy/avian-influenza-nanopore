@@ -131,9 +131,14 @@ def write_summary(
     failed_segments = [
         row["segment"]
         for row in coverage_rows
-        if row.get("coverage_flag") not in {"PASS", ""}
+        if row.get("coverage_flag") == "FAIL"
     ]
 
+    missing_segments = [
+        row["segment"]
+        for row in coverage_rows
+        if row.get("coverage_flag") == "MISSING"
+    ]
     ha_rows = [row for row in coverage_rows if row.get("segment") == "HA"]
     na_rows = [row for row in coverage_rows if row.get("segment") == "NA"]
 
@@ -194,6 +199,8 @@ def write_summary(
         "segments_pass",
         "pass_segment_names",
         "failed_segment_names",
+        "segments_missing",
+        "missing_segment_names",
         "ha_contig",
         "na_contig",
         "ha_median_depth",
@@ -232,6 +239,8 @@ def write_summary(
     "segments_pass": len(pass_segments),
     "pass_segment_names": ",".join(pass_segments) or "NONE",
     "failed_segment_names": ",".join(failed_segments) or "NONE",
+    "segments_missing": len(missing_segments),
+    "missing_segment_names": ",".join(missing_segments) or "NONE",
     "ha_contig": ha_contig,
     "na_contig": na_contig,
     "ha_median_depth": ha_median_depth,

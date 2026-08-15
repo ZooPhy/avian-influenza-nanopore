@@ -48,4 +48,8 @@ def test_segments_detected_excludes_missing_segment(tmp_path):
 
     assert row["segments_detected"] == "7"
     assert row["segments_pass"] == "7"
-    assert "MP" in row["failed_segment_names"].split(",")
+    assert row["segments_missing"] == "1"
+    assert row["missing_segment_names"] == "MP"
+    assert row["failed_segment_names"] == "NONE"
+    assert "coverage_failures" not in row["review_flags"].split(";")
+    assert "fewer_than_8_pass_segments" in row["review_flags"].split(";")
