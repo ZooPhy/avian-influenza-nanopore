@@ -1699,14 +1699,13 @@ rule run_provenance:
             "envs/coverage.yaml",
             "envs/fastplong.yaml",
             "envs/genoflu.yaml",
-            "envs/irma.yaml",
             "envs/medaka.yaml",
             "envs/nanoplot.yaml",
             "envs/porechop.yaml",
             "envs/py-tools.yaml",
             "envs/pysam.yaml",
+            "envs/seqtk.yaml",
             "envs/reporting.yaml",
-            "envs/samtools.yaml",
         ]
     output:
         tsv=f"{RESULTS}/run_summary/run_provenance.tsv",
@@ -1765,14 +1764,13 @@ rule run_provenance:
           --env coverage=envs/coverage.yaml \
           --env fastplong=envs/fastplong.yaml \
           --env genoflu=envs/genoflu.yaml \
-          --env irma=envs/irma.yaml \
           --env medaka=envs/medaka.yaml \
           --env nanoplot=envs/nanoplot.yaml \
           --env porechop=envs/porechop.yaml \
           --env py-tools=envs/py-tools.yaml \
           --env pysam=envs/pysam.yaml \
           --env reporting=envs/reporting.yaml \
-          --env samtools=envs/samtools.yaml
+          --env seqtk=envs/seqtk.yaml
         """
 
 

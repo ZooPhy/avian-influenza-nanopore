@@ -131,14 +131,13 @@ def test_production_wings_bundle_release_artifact():
         "coverage",
         "fastplong",
         "genoflu",
-        "irma",
         "medaka",
         "nanoplot",
         "porechop",
         "py-tools",
         "pysam",
         "reporting",
-        "samtools",
+        "seqtk",
     ):
         assert required in envs
         assert envs[required]["sha256"] != "MISSING"
