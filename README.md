@@ -10,10 +10,7 @@ WINGS is a portable Snakemake workflow for genomic analysis of avian influenza A
 
 WINGS was developed in support of the [**Pandemic ESCAPE Center**](https://escape.engr.uky.edu/), with a focus on genomic epidemiology, bioinformatics, and surveillance of avian influenza viruses in wild birds.
 
-The workflow has been validated on:
-
-- Apple Silicon macOS using Snakemake, Conda, and Docker Desktop
-- Linux ARM64 on a SLURM cluster using Snakemake, Conda, and Apptainer or Singularity
+The workflow has been validated on Apple Silicon macOS using Snakemake, Conda, and Docker Desktop. It is designed to support Linux ARM64 on SLURM clusters using Snakemake, Conda, and Apptainer or Singularity; the current release candidate should be revalidated on Linux ARM64 before formal release.
 
 Most tools run in rule-specific Conda environments. IRMA runs in a container selected for the host environment.
 
@@ -1055,12 +1052,12 @@ Rerun the environment creation or complete workflow command.
 - Run-level provenance is written to `results/run_summary/run_provenance.tsv` and `.json`, and the JSON record is embedded in the portable `.wings` bundle.
 - The BLAST reference archive, generated database, input reads, results, local configuration, and Snakemake working files should not be committed to Git. Commit the BLAST provenance manifest only when intentionally maintaining a fixed reference build record in the repository.
 - `results/wings_report_bundle.wings` is generated from local reports and should be treated as analysis output; do not publish it unless its contents are appropriate for public release.
-- IRMA and VADR use pinned container tags (`ghcr.io/cdcgov/irma:v1.3.5` and `staphb/vadr:1.7`) for reproducibility. The GenoFLU Conda environment should also pin a specific GenoFLU version before a formal release.
+- IRMA and VADR use pinned container tags (`ghcr.io/cdcgov/irma:v1.3.5` and `staphb/vadr:1.7`), and GenoFLU and other primary workflow tools use pinned Conda package versions to improve reproducibility.
 
 Recommended `.gitignore` entries:
 
 ```text
-config.yaml
+/config.yaml
 .snakemake/
 results/
 data/*.fastq

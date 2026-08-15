@@ -1,39 +1,64 @@
 # Input and output
 reads_dir: "data"
+reads_pattern: "{sample}.fastq.gz"
 results_dir: "results"
 
-# Coverage
+# Sample metadata
+metadata_file: "metadata.tsv"
+metadata_require_all_samples: true
+
+# Segment QC
 coverage_min_depth: 50
+coverage_min_breadth: 0.95
+segment_max_n_fraction: 0.01
 
-# Porechop resources
-porechop_mem_mb: 64000
+# Porechop ABI
+porechop_command: "porechop_abi"
+porechop_mem_mb: 12000
 porechop_time_min: 240
-
-# IRMA
-irma_image: "docker://ghcr.io/cdcgov/irma:v1.3.5"
-irma_module: "FLU-minion"
-
-# BLAST
-blast_db: "data/flu_db/flu"
-
-# Medaka
-# Set this to the model matching the ONT chemistry/basecaller used.
-# Leave null temporarily to preserve the current behavior.
-medaka_model: null
 
 # fastplong
 fastplong_mean_quality: 10
 fastplong_min_length: 500
+fastplong_threads: 4
+
+# NanoPlot
+nanoplot_threads: 1
+nanoplot_install_chrome: true
+
+# IRMA
+irma_image: "docker://ghcr.io/cdcgov/irma:v1.3.5"
+irma_module: "FLU-minion"
+irma_runtime: "auto"       # auto, local, docker, apptainer, singularity
+irma_threads: 4
+
+# BLAST
+blast_db: "resources/flu_db/fluA_db"
+blast_min_identity: 95.0
+blast_min_query_coverage: 90.0
+blast_max_target_seqs: 10
+blast_max_hsps: 1
+blast_threads: 2
+
+# Medaka
+# Leave null to detect the Oxford Nanopore basecaller model from FASTQ metadata.
+medaka_model: null
+medaka_model_records: 100
+medaka_threads: 2
+medaka_fail_soft: true
 
 # GenoFLU
 run_genoflu: true
 
 # VADR influenza annotation
 run_vadr: true
-vadr_runtime: auto          # auto, local, docker, apptainer, singularity
+vadr_runtime: auto         # auto, local, docker, apptainer, singularity
 vadr_image: "docker://staphb/vadr:1.7"
 vadr_mkey: flu
 vadr_threads: 1
 vadr_mem_mb: 8000
 vadr_time_min: 120
 vadr_fail_soft: false
+
+# Run-level reporting
+run_summary: true
