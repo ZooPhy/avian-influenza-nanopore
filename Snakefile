@@ -1529,6 +1529,7 @@ rule sample_summary_html:
 
         (
             cd "$output_dir"
+            export DENO_DIR="$output_dir/.deno-cache"
             export REPORT_SNAKEMAKE_VERSION={params.snakemake_version:q}
             quarto render ".sample_summary.qmd" \
               --to html \
