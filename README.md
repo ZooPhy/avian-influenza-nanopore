@@ -10,7 +10,7 @@ WINGS is a portable Snakemake workflow for genomic analysis of avian influenza A
 
 WINGS was developed in support of the [**Pandemic ESCAPE Center**](https://escape.engr.uky.edu/), with a focus on genomic epidemiology, bioinformatics, and surveillance of avian influenza viruses in wild birds.
 
-The workflow has been validated on Apple Silicon macOS using Snakemake, Conda, and Docker Desktop. It is designed to support Linux ARM64 on SLURM clusters using Snakemake, Conda, and Apptainer or Singularity; the current release candidate should be revalidated on Linux ARM64 before formal release.
+The workflow has been validated on Apple Silicon macOS using Snakemake, Conda, and Docker Desktop, and on Linux ARM64 SLURM clusters using Snakemake, Conda, and Apptainer. VADR is currently disabled on Linux ARM64 because the pinned VADR container image does not provide a Linux ARM64 image.
 
 Most tools run in rule-specific Conda environments. IRMA runs in a container selected for the host environment.
 
@@ -107,14 +107,19 @@ NanoPlot is also available as an optional raw-read quality-control target.
 │   ├── porechop.yaml
 │   ├── py-tools.yaml
 │   ├── pysam.yaml
+│   ├── reporting.yaml                 # macOS/default reporting environment
+│   ├── reporting-linux-arm64.yaml     # Linux ARM64 reporting environment
 │   └── seqtk.yaml
 ├── scripts/
 │   ├── build_blast_db.sh
 │   ├── build_report_bundle.py
 │   ├── check_coverage.py
 │   ├── coverage_table.py
+│   ├── install_quarto_linux_arm64.sh  # pinned ARM64 Quarto installer
 │   ├── normalize_irma_outputs.py
+│   ├── prepare_vadr_input.py
 │   ├── resolve_medaka_model.py
+│   ├── sample_summary.py
 │   ├── validate_metadata.py
 │   ├── extract_sample_metadata.py
 │   ├── serve_reports.py
@@ -128,10 +133,12 @@ NanoPlot is also available as an optional raw-read quality-control target.
 │       └── sample-report.css
 ├── profiles/
 │   └── slurm-arm/
+├── tests/                             # regression tests
 ├── demo/
 │   └── wings_demo.wings              # public demonstration bundle for the website
 ├── data/                             # input FASTQ files; not committed
-├── metadata.tsv                      # sample metadata table
+├── metadata.example.tsv               # sample metadata template
+├── metadata.tsv                       # local sample metadata; not committed
 ├── resources/
 │   ├── fluA_reference.fasta.zip      # downloaded resource; not committed
 │   └── flu_db/                       # generated BLAST database; not committed
@@ -193,6 +200,7 @@ The validated cluster configuration uses:
 - Snakemake
 - Apptainer or Singularity
 - SLURM
+- standalone Quarto 1.9.38 installed with the included ARM64 installer
 
 ## Installation
 
@@ -202,6 +210,24 @@ The validated cluster configuration uses:
 git clone https://github.com/ZooPhy/wings.git
 cd wings
 ```
+
+### Linux ARM64: install Quarto
+
+On Linux ARM64, WINGS uses a standalone pinned Quarto installation because the Conda Quarto package is not available for the validated ARM64 environment.
+
+From the repository root, run:
+
+```bash
+./scripts/install_quarto_linux_arm64.sh software
+```
+
+The installer downloads Quarto 1.9.38 for Linux ARM64, verifies the pinned SHA-256 checksum, and installs it under:
+
+```text
+software/quarto-1.9.38/
+```
+
+WINGS automatically uses `software/quarto-1.9.38/bin/quarto` on Linux ARM64 when that executable is present. Otherwise, it falls back to `quarto` found on `PATH`.
 
 ### 2. Install Miniforge on Apple Silicon macOS
 
@@ -493,14 +519,14 @@ medaka_model: null
 medaka_fail_soft: true
 
 run_genoflu: true
-run_vadr: true
+run_vadr: false
 vadr_image: "docker://staphb/vadr:1.7"
 run_summary: true
 ```
 
 Use `irma_runtime: "singularity"` instead when Singularity is installed rather than Apptainer. `irma_runtime: "auto"` selects Apptainer, Singularity, Docker, or local IRMA in that order based on what is available.
 
-The `run_genoflu`, `run_vadr`, and `run_summary` settings control whether those analyses or run-level reporting outputs are requested as default workflow targets. Keep them set to `true` for a complete production run.
+The `run_genoflu`, `run_vadr`, and `run_summary` settings control whether those analyses or run-level reporting outputs are requested as default workflow targets. On Apple Silicon macOS, keep all three set to `true` for a complete production run. On Linux ARM64, keep `run_genoflu: true` and `run_summary: true`, but set `run_vadr: false` when using the pinned VADR container image because that image does not provide a Linux ARM64 build.
 
 ### Medaka model
 
@@ -587,46 +613,54 @@ snakemake \
 
 ## Running on a Linux ARM64 SLURM cluster
 
-Example submission script:
+The following submission script reflects the validated Linux ARM64 configuration used for WINGS testing. Adjust the SLURM account, node, paths, and environment name for your cluster as needed.
 
 ```bash
 #!/bin/bash
 
-#SBATCH --job-name=avian-flu
+#SBATCH --job-name=snakemake
 #SBATCH --mem=200G
-#SBATCH --partition=arm
+#SBATCH -p arm
 #SBATCH --cpus-per-task=4
-#SBATCH --qos=grp_mscotch
-#SBATCH --error=snakemake.err
-#SBATCH --output=snakemake.out
-#SBATCH --time=7-00:00:00
+#SBATCH -q grp_mscotch
+#SBATCH -e wings.err
+#SBATCH -o wings.out
+#SBATCH -t 7-00:00:00
 #SBATCH --export=NONE
 #SBATCH --nodelist=scgh003
 
 set -euo pipefail
-
 module purge
-module load mamba/latest
+unset PYTHONPATH
 
-eval "$(conda shell.bash hook)"
-conda activate snakemake_env
+source "$HOME/miniforge3/etc/profile.d/conda.sh"
+conda activate wings_snakemake_new
+hash -r
 
-cd /data/pipp2/Scotch/Snakemake/flu
+export CONDA_PKGS_DIRS=/data/pipp2/Scotch/Snakemake/conda_pkgs
+export XDG_CACHE_HOME=/data/pipp2/Scotch/Snakemake/cache
+export TMPDIR=/data/pipp2/Scotch/Snakemake/tmp
+export TEMP="$TMPDIR"
+export TMP="$TMPDIR"
+
+mkdir -p "$CONDA_PKGS_DIRS" "$XDG_CACHE_HOME" "$TMPDIR"
+
+cd /data/pipp2/Scotch/Snakemake/wings/
 
 snakemake \
   --configfile config.yaml \
   --sdm conda \
+  --printshellcmds \
   --cores "$SLURM_CPUS_PER_TASK" \
   --resources mem_mb=200000 kaleido=1 \
   --conda-cleanup-pkgs cache \
   --latency-wait 300 \
-  --printshellcmds \
   --rerun-incomplete
 ```
 
-Set `irma_runtime` in the cluster `config.yaml` to `apptainer` or `singularity` as appropriate. The current Snakefile invokes the selected IRMA runtime directly, so a separate Snakemake container deployment flag is not required for IRMA.
+The cache and temporary-directory overrides keep large Conda package caches and transient files on a writable project filesystem rather than a space-limited home or runtime filesystem. The repo-local Quarto installation at `software/quarto-1.9.38/bin/quarto` is detected automatically, so no Quarto `PATH` override is required.
 
-Older Snakemake installations may use `--use-conda` instead of `--sdm conda`.
+Set `irma_runtime` in the cluster `config.yaml` to `apptainer` or `singularity` as appropriate. The current Snakefile invokes the selected IRMA runtime directly, so a separate Snakemake container deployment flag is not required for IRMA. On Linux ARM64, keep `run_vadr: false` unless a compatible ARM64 VADR image is provided.
 
 ## Output structure
 
@@ -1058,6 +1092,8 @@ Recommended `.gitignore` entries:
 
 ```text
 /config.yaml
+/metadata.tsv
+/software/
 .snakemake/
 results/
 data/*.fastq
