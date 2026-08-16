@@ -368,7 +368,7 @@ if RUN_SUMMARY:
 rule all:
     input:
         FINAL_TARGETS
-    
+    default_target: True
 
 # -----------------------------------------------------------------------------
 # NanoPlot
