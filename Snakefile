@@ -1537,6 +1537,10 @@ rule sample_summary_html:
 
         (
             cd "$output_dir"
+            runtime_dir="${{TMPDIR:-/tmp}}/wings-jupyter-{wildcards.sample}"
+            mkdir -p "$runtime_dir"
+            export XDG_RUNTIME_DIR="$runtime_dir"
+            export JUPYTER_RUNTIME_DIR="$runtime_dir"
             export DENO_DIR="$output_dir/.deno-cache"
             export REPORT_SNAKEMAKE_VERSION={params.snakemake_version:q}
             {params.quarto:q} render ".sample_summary.qmd" \
@@ -1551,6 +1555,7 @@ rule sample_summary_html:
               -P "coverage_threshold:{params.coverage_threshold}" \
               -P "coverage_breadth_threshold:{params.coverage_breadth_threshold}" \
               -P "max_n_fraction:{params.max_n_fraction}"
+            rm -rf "$runtime_dir"
             )
 
         rm -f "$temp_qmd"
@@ -1648,6 +1653,10 @@ rule run_summary_html:
 
         (
             cd "$output_dir"
+            runtime_dir="${{TMPDIR:-/tmp}}/wings-jupyter-run-summary"
+            mkdir -p "$runtime_dir"
+            export XDG_RUNTIME_DIR="$runtime_dir"
+            export JUPYTER_RUNTIME_DIR="$runtime_dir"
             export REPORT_SNAKEMAKE_VERSION={params.snakemake_version:q}
             {params.quarto:q} render ".run_summary.qmd" \
               --to html \
@@ -1659,6 +1668,7 @@ rule run_summary_html:
               -P "coverage_threshold:{params.coverage_threshold}" \
               -P "coverage_breadth_threshold:{params.coverage_breadth_threshold}" \
               -P "max_n_fraction:{params.max_n_fraction}"
+            rm -rf "$runtime_dir"
         )
 
         rm -f "$temp_qmd"
