@@ -19,6 +19,7 @@ import shutil
 import statistics as stats
 import subprocess
 import sys
+import platform
 from pathlib import Path
 from importlib.metadata import version, PackageNotFoundError
 
@@ -30,6 +31,16 @@ except PackageNotFoundError:
 from snakemake.io import glob_wildcards
 
 shell.executable("/bin/bash")
+IS_LINUX_ARM64 = (
+    sys.platform.startswith("linux")
+    and platform.machine().lower() in {"aarch64", "arm64"}
+)
+
+REPORTING_ENV = (
+    "envs/reporting-linux-arm64.yaml"
+    if IS_LINUX_ARM64
+    else "envs/reporting.yaml"
+)
 
 # -----------------------------------------------------------------------------
 # Configuration helpers
@@ -1451,7 +1462,7 @@ rule sample_summary:
     output:
         tsv=f"{RESULTS}/{{sample}}/summary/{{sample}}.sample_summary.tsv"
     conda:
-        "envs/reporting.yaml"
+        REPORTING_ENV
     script:
         "scripts/sample_summary.py"
 
@@ -1490,7 +1501,7 @@ rule sample_summary_html:
         max_n_fraction=SEGMENT_MAX_N_FRACTION,
         snakemake_version=SNAKEMAKE_VERSION,
     conda:
-        "envs/reporting.yaml"
+        REPORTING_ENV
     shell:
         r"""
         set -euo pipefail
@@ -1604,7 +1615,7 @@ rule run_summary_html:
         coverage_breadth_threshold=COVERAGE_MIN_BREADTH,
         max_n_fraction=SEGMENT_MAX_N_FRACTION,
     conda:
-        "envs/reporting.yaml"
+        REPORTING_ENV
     shell:
         r"""
         set -euo pipefail
@@ -1705,7 +1716,7 @@ rule run_provenance:
             "envs/py-tools.yaml",
             "envs/pysam.yaml",
             "envs/seqtk.yaml",
-            "envs/reporting.yaml",
+            REPORTING_ENV,
         ]
     output:
         tsv=f"{RESULTS}/run_summary/run_provenance.tsv",
@@ -1729,7 +1740,8 @@ rule run_provenance:
         blast_min_identity=BLAST_MIN_IDENTITY,
         blast_min_query_coverage=BLAST_MIN_QUERY_COVERAGE,
         blast_max_target_seqs=BLAST_MAX_TARGET_SEQS,
-        blast_max_hsps=BLAST_MAX_HSPS
+        blast_max_hsps=BLAST_MAX_HSPS,
+        reporting_env=REPORTING_ENV
     conda:
         "envs/py-tools.yaml"
     shell:
@@ -1769,7 +1781,7 @@ rule run_provenance:
           --env porechop=envs/porechop.yaml \
           --env py-tools=envs/py-tools.yaml \
           --env pysam=envs/pysam.yaml \
-          --env reporting=envs/reporting.yaml \
+          --env reporting={params.reporting_env:q} \
           --env seqtk=envs/seqtk.yaml
         """
 

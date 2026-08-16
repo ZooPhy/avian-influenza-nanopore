@@ -1,0 +1,24 @@
+name: avian-flu-reporting
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.12
+  - pandas
+  - numpy
+  - matplotlib
+  - plotly
+  - jinja2
+  - pyyaml
+  - jupyter
+  - nbformat
+  - ipykernel
+  - papermill
+  - r-base
+  - r-dt
+  - r-readr
+  - r-dplyr
+  - r-ggplot2
+  - r-plotly
+  - r-gt
