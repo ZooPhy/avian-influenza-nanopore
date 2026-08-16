@@ -42,6 +42,13 @@ REPORTING_ENV = (
     else "envs/reporting.yaml"
 )
 
+QUARTO_ARM64 = Path(workflow.basedir) / "software" / "quarto-1.9.38" / "bin" / "quarto"
+QUARTO_CMD = (
+    str(QUARTO_ARM64)
+    if IS_LINUX_ARM64 and QUARTO_ARM64.is_file()
+    else "quarto"
+)
+
 # -----------------------------------------------------------------------------
 # Configuration helpers
 # -----------------------------------------------------------------------------
@@ -1500,6 +1507,7 @@ rule sample_summary_html:
         coverage_breadth_threshold=COVERAGE_MIN_BREADTH,
         max_n_fraction=SEGMENT_MAX_N_FRACTION,
         snakemake_version=SNAKEMAKE_VERSION,
+        quarto=QUARTO_CMD,
     conda:
         REPORTING_ENV
     shell:
@@ -1531,7 +1539,7 @@ rule sample_summary_html:
             cd "$output_dir"
             export DENO_DIR="$output_dir/.deno-cache"
             export REPORT_SNAKEMAKE_VERSION={params.snakemake_version:q}
-            quarto render ".sample_summary.qmd" \
+            {params.quarto:q} render ".sample_summary.qmd" \
               --to html \
               --output "{wildcards.sample}.sample_summary.html" \
               -P "sample_id:{wildcards.sample}" \
@@ -1615,6 +1623,7 @@ rule run_summary_html:
         coverage_threshold=COVERAGE_MIN,
         coverage_breadth_threshold=COVERAGE_MIN_BREADTH,
         max_n_fraction=SEGMENT_MAX_N_FRACTION,
+        quarto=QUARTO_CMD,
     conda:
         REPORTING_ENV
     shell:
@@ -1640,7 +1649,7 @@ rule run_summary_html:
         (
             cd "$output_dir"
             export REPORT_SNAKEMAKE_VERSION={params.snakemake_version:q}
-            quarto render ".run_summary.qmd" \
+            {params.quarto:q} render ".run_summary.qmd" \
               --to html \
               --output "run_summary.html" \
               -P "results_dir:${{results_abs}}" \

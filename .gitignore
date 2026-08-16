@@ -49,3 +49,6 @@ resources/flu_db/
 Snakefile.pre-irma-refactor
 avian_influenza_irma_refactor/
 tmp/
+
+# Local standalone tools
+/software/
