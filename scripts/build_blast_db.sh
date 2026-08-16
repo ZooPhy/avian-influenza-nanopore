@@ -19,6 +19,8 @@ ASSET_NAME="${ASSET_NAME:-fluA_reference.fasta.zip}"
 ZIP_URL="${ZIP_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}}"
 BLAST_IMAGE="${BLAST_IMAGE:-ncbi/blast-static:2.17.0}"
 BLAST_DB_VERSION="${BLAST_DB_VERSION:-4}"
+DEFAULT_ARCHIVE_SHA256="36645a72b290f3043b67c7f43196b438da5defbca24c00c1a592ce92fa6ba0e6"
+EXPECTED_ARCHIVE_SHA256="${EXPECTED_ARCHIVE_SHA256:-}"
 
 mkdir -p "${RESOURCE_DIR}" "${DB_DIR}"
 
@@ -85,6 +87,46 @@ if [[ ! -s "${ZIP}" ]]; then
 fi
 
 ARCHIVE_SHA256="$(sha256_file "${ZIP}")"
+
+# Verify the pinned default reference archive. Custom reference sources may
+# provide their own checksum with EXPECTED_ARCHIVE_SHA256.
+if [[ -n "${EXPECTED_ARCHIVE_SHA256}" ]]; then
+    EXPECTED_SHA256="${EXPECTED_ARCHIVE_SHA256}"
+elif [[ "${GITHUB_REPO}" == "ZooPhy/apgap-influenza-pipeline" \
+     && "${RELEASE_TAG}" == "v0.1.0" \
+     && "${ASSET_NAME}" == "fluA_reference.fasta.zip" \
+     && "${ZIP_URL}" == "https://github.com/ZooPhy/apgap-influenza-pipeline/releases/download/v0.1.0/fluA_reference.fasta.zip" ]]; then
+    EXPECTED_SHA256="${DEFAULT_ARCHIVE_SHA256}"
+else
+    EXPECTED_SHA256=""
+fi
+
+if [[ -n "${EXPECTED_SHA256}" ]]; then
+    if [[ "${ARCHIVE_SHA256}" != "${EXPECTED_SHA256}" ]]; then
+        cat >&2 <<ERROR
+ERROR: BLAST reference archive SHA-256 verification failed.
+
+Archive:
+  ${ZIP}
+
+Expected:
+  ${EXPECTED_SHA256}
+
+Observed:
+  ${ARCHIVE_SHA256}
+
+The archive will not be used to build the BLAST database.
+Remove or replace the archive and rerun the script.
+ERROR
+        exit 1
+    fi
+
+    echo "Reference archive SHA-256 verified:"
+    echo "  ${ARCHIVE_SHA256}"
+else
+    echo "WARNING: No expected SHA-256 is configured for this custom reference source." >&2
+    echo "         Archive SHA-256 will be recorded but cannot be independently verified." >&2
+fi
 
 echo "Extracting influenza reference..."
 rm -rf "${TMP_DIR}"
