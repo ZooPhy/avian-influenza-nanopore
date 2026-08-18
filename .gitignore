@@ -52,3 +52,6 @@ tmp/
 
 # Local standalone tools
 /software/
+
+# Downloaded VADR influenza models
+resources/vadr-models/

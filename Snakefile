@@ -185,6 +185,11 @@ VADR_RUNTIME = str(config.get("vadr_runtime", "auto")).strip().lower()
 VADR_MKEY = str(config.get("vadr_mkey", "flu"))
 VADR_THREADS = int(config.get("vadr_threads", 1))
 VADR_FAIL_SOFT = as_bool(config.get("vadr_fail_soft", False))
+VADR_MODEL_DIR = config_path(
+    "vadr_model_dir",
+    "resources/vadr-models/vadr-models-flu-1.7-1",
+)
+VADR_FORCEGENE = as_bool(config.get("vadr_forcegene", True))
 
 # Rule-level threads can be overridden in config or by a Snakemake profile.
 NANOPLOT_THREADS = int(config.get("nanoplot_threads", 1))
@@ -1151,12 +1156,15 @@ rule vadr_annotate:
         image=VADR_IMAGE,
         runtime=VADR_RUNTIME,
         mkey=VADR_MKEY,
+        model_dir=VADR_MODEL_DIR,
+        forcegene="true" if VADR_FORCEGENE else "false",
         fail_soft="true" if VADR_FAIL_SOFT else "false"
     run:
         input_path = Path(str(input.fasta)).resolve()
         outdir = Path(str(output.outdir)).resolve()
         done_path = Path(str(output.done)).resolve()
         log_path = Path(str(log[0])).resolve()
+        
         outdir.parent.mkdir(parents=True, exist_ok=True)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         if outdir.exists():
@@ -1168,6 +1176,28 @@ rule vadr_annotate:
             log_path.write_text("No segment-QC-qualified consensus sequences; VADR skipped.\n")
             done_path.touch()
         else:
+            model_dir = Path(str(params.model_dir)).resolve()
+
+            if not model_dir.is_dir():
+                raise RuntimeError(
+                    f"VADR model directory not found: {model_dir}. "
+                    "Install the pinned influenza models or update vadr_model_dir."
+                )
+
+            required_model_files = [
+                model_dir / f"{params.mkey}.minfo",
+                model_dir / f"{params.mkey}.cm",
+                model_dir / f"{params.mkey}.fa",
+            ]
+            missing_model_files = [
+                str(path) for path in required_model_files if not path.is_file()
+            ]
+            if missing_model_files:
+                raise RuntimeError(
+                    "VADR model directory is incomplete; missing: "
+                    + ", ".join(missing_model_files)
+                )
+
             runtime = str(params.runtime).lower()
             allowed = {"auto", "local", "docker", "apptainer", "singularity"}
             if runtime not in allowed:
@@ -1193,30 +1223,56 @@ rule vadr_annotate:
             vadr_args = [
                 "v-annotate.pl", "-f", "--split", "--cpu", str(threads),
                 "-r", "--atgonly", "--xnocomp", "--nomisc",
-                "--alt_fail", "extrant5,extrant3", "--mkey", str(params.mkey),
-                str(input_path), prefix,
+                "--alt_fail", "extrant5,extrant3",
+                "--mkey", str(params.mkey),
             ]
-            mount_root = Path(os.path.commonpath([str(input_path.parent), str(outdir.parent)]))
+
+            if str(params.forcegene).lower() == "true":
+                vadr_args.append("--forcegene")
+            mount_root = Path(
+                os.path.commonpath([str(input_path.parent), str(outdir.parent)])
+            )
+
             if runtime == "local":
-                command = vadr_args
+                command = [
+                    *vadr_args,
+                    "--mdir", str(model_dir),
+                    str(input_path), prefix,
+                ]
+
             elif runtime == "docker":
                 image = str(params.image)
                 if image.startswith("docker://"):
                     image = image[len("docker://"):]
+
                 command = [
-                    "docker", "run", "--rm", "--platform", "linux/amd64",
-                    "-v", f"{mount_root}:{mount_root}", "-w", str(outdir),
-                    image, *vadr_args,
+                    "docker", "run", "--rm",
+                    "--platform", "linux/amd64",
+                    "-v", f"{mount_root}:{mount_root}",
+                    "-v", f"{model_dir}:/models:ro",
+                    "-w", str(outdir),
+                    image,
+                    *vadr_args,
+                    "--mdir", "/models",
+                    str(input_path), prefix,
                 ]
+
             else:
                 executable = shutil.which(runtime)
                 if executable is None:
-                    raise RuntimeError(f"Requested {runtime}, but it is not on PATH")
-                command = [
-                    executable, "exec", "--bind", f"{mount_root}:{mount_root}",
-                    str(params.image), *vadr_args,
-                ]
+                    raise RuntimeError(
+                        f"Requested {runtime}, but it is not on PATH"
+                    )
 
+                command = [
+                    executable, "exec",
+                    "--bind", f"{mount_root}:{mount_root}",
+                    "--bind", f"{model_dir}:/models:ro",
+                    str(params.image),
+                    *vadr_args,
+                    "--mdir", "/models",
+                    str(input_path), prefix,
+                ]
             with log_path.open("w") as log_handle:
                 completed = subprocess.run(
                     command, cwd=outdir, stdout=log_handle,
