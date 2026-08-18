@@ -55,6 +55,8 @@ run_vadr: true
 vadr_runtime: auto         # auto, local, docker, apptainer, singularity
 vadr_image: "docker://staphb/vadr:1.7"
 vadr_mkey: flu
+vadr_model_dir: "resources/vadr-models/vadr-models-flu-1.7-1"
+vadr_forcegene: true
 vadr_threads: 1
 vadr_mem_mb: 8000
 vadr_time_min: 120

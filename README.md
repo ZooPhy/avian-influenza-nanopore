@@ -113,6 +113,7 @@ NanoPlot is also available as an optional raw-read quality-control target.
 ├── scripts/
 │   ├── build_blast_db.sh
 │   ├── build_report_bundle.py
+│   ├── install_vadr_models.sh           # pinned VADR influenza-model installer
 │   ├── check_coverage.py
 │   ├── coverage_table.py
 │   ├── install_quarto_linux_arm64.sh  # pinned ARM64 Quarto installer
@@ -141,8 +142,9 @@ NanoPlot is also available as an optional raw-read quality-control target.
 ├── metadata.tsv                       # local sample metadata; not committed
 ├── resources/
 │   ├── fluA_reference.fasta.zip      # downloaded resource; not committed
-│   └── flu_db/                       # generated BLAST database; not committed
-│       └── database_manifest.tsv     # BLAST database provenance manifest
+│   ├── flu_db/                       # generated BLAST database; not committed
+│   │   └── database_manifest.tsv     # BLAST database provenance manifest
+│   └── vadr-models/                  # downloaded VADR influenza models; not committed
 ├── results/                          # generated outputs; not committed
 ├── README.md
 └── .gitignore
@@ -162,7 +164,7 @@ NanoPlot is also available as an optional raw-read quality-control target.
   - Singularity
   - a local IRMA installation
 
-The BLAST database setup script additionally requires `curl`, `unzip`, and either local `makeblastdb` or one of the supported container runtimes.
+The BLAST database setup script additionally requires `curl`, `unzip`, and either local `makeblastdb` or one of the supported container runtimes. The VADR model installer requires `curl`, `tar`, and either `shasum` or `sha256sum`.
 
 ### Apple Silicon laptop
 
@@ -291,7 +293,42 @@ cp config/config.example.yaml config.yaml
 
 `config.yaml` is intentionally excluded from Git so that paths and machine-specific settings can be changed locally.
 
-### 2. Build the influenza BLAST database
+### 2. Install the pinned VADR influenza models
+
+VADR 1.7 does not bundle the influenza model library in the pinned `staphb/vadr:1.7` container. WINGS therefore keeps the VADR software image and influenza model data separate. Install the pinned influenza models from the repository root with:
+
+```bash
+./scripts/install_vadr_models.sh
+```
+
+The installer downloads NCBI VADR influenza models version `1.7-1`, verifies the WINGS-pinned SHA-256 checksum before extraction, checks for the required `flu.minfo`, `flu.cm`, and `flu.fa` files, and installs the models under:
+
+```text
+resources/vadr-models/vadr-models-flu-1.7-1/
+```
+
+The pinned archive SHA-256 is:
+
+```text
+5f09b8d95413251499a2e49a0b93ea119bc96814b4742d92ba55fd3bdadac7ec
+```
+
+The installer also writes `WINGS_MODEL_MANIFEST.tsv` inside the installed model directory with the model version, source URL, and pinned archive checksum. The downloaded models are local resources and are excluded from Git.
+
+Configure VADR with:
+
+```yaml
+run_vadr: true
+vadr_runtime: auto
+vadr_image: "docker://staphb/vadr:1.7"
+vadr_mkey: flu
+vadr_model_dir: "resources/vadr-models/vadr-models-flu-1.7-1"
+vadr_forcegene: true
+```
+
+On Apple Silicon, `vadr_runtime: auto` can select Docker and WINGS mounts the model directory read-only into the VADR container. On Linux ARM64, keep `run_vadr: false` when using the pinned VADR image because that image does not provide a native Linux ARM64 build.
+
+### 3. Build the influenza BLAST database
 
 Run the included setup script from the repository root:
 
@@ -479,7 +516,11 @@ medaka_fail_soft: true
 
 run_genoflu: true
 run_vadr: true
+vadr_runtime: auto
 vadr_image: "docker://staphb/vadr:1.7"
+vadr_mkey: flu
+vadr_model_dir: "resources/vadr-models/vadr-models-flu-1.7-1"
+vadr_forcegene: true
 run_summary: true
 ```
 
@@ -520,13 +561,19 @@ medaka_fail_soft: true
 
 run_genoflu: true
 run_vadr: false
+vadr_runtime: auto
 vadr_image: "docker://staphb/vadr:1.7"
+vadr_mkey: flu
+vadr_model_dir: "resources/vadr-models/vadr-models-flu-1.7-1"
+vadr_forcegene: true
 run_summary: true
 ```
 
 Use `irma_runtime: "singularity"` instead when Singularity is installed rather than Apptainer. `irma_runtime: "auto"` selects Apptainer, Singularity, Docker, or local IRMA in that order based on what is available.
 
 The `run_genoflu`, `run_vadr`, and `run_summary` settings control whether those analyses or run-level reporting outputs are requested as default workflow targets. On Apple Silicon macOS, keep all three set to `true` for a complete production run. On Linux ARM64, keep `run_genoflu: true` and `run_summary: true`, but set `run_vadr: false` when using the pinned VADR container image because that image does not provide a Linux ARM64 build.
+
+When VADR is enabled, `vadr_model_dir` must point to a complete influenza model installation. WINGS validates the required model files before launching VADR and passes the directory with `--mdir`; container runtimes mount it read-only. `vadr_forcegene: true` adds gene qualifiers to CDS and mat_peptide features using the influenza model information.
 
 ### Medaka model
 
@@ -1020,6 +1067,24 @@ snakemake \
   results/<sample>/summary/<sample>.sample_summary.html
 ```
 
+### VADR influenza models are not installed
+
+If VADR reports that `flu.minfo` is missing, or WINGS reports that the configured VADR model directory is absent or incomplete, install the pinned influenza models:
+
+```bash
+./scripts/install_vadr_models.sh
+```
+
+Then confirm:
+
+```bash
+ls -lh resources/vadr-models/vadr-models-flu-1.7-1/flu.minfo \
+       resources/vadr-models/vadr-models-flu-1.7-1/flu.cm \
+       resources/vadr-models/vadr-models-flu-1.7-1/flu.fa
+```
+
+The pinned `staphb/vadr:1.7` image contains VADR itself but does not contain the influenza model bundle used by WINGS. WINGS supplies the models separately through `vadr_model_dir`.
+
 ### BLAST database files are not found
 
 Message:
@@ -1086,7 +1151,7 @@ Rerun the environment creation or complete workflow command.
 - Run-level provenance is written to `results/run_summary/run_provenance.tsv` and `.json`, and the JSON record is embedded in the portable `.wings` bundle.
 - The BLAST reference archive, generated database, input reads, results, local configuration, and Snakemake working files should not be committed to Git. Commit the BLAST provenance manifest only when intentionally maintaining a fixed reference build record in the repository.
 - `results/wings_report_bundle.wings` is generated from local reports and should be treated as analysis output; do not publish it unless its contents are appropriate for public release.
-- IRMA and VADR use pinned container tags (`ghcr.io/cdcgov/irma:v1.3.5` and `staphb/vadr:1.7`), and GenoFLU and other primary workflow tools use pinned Conda package versions to improve reproducibility.
+- IRMA and VADR use pinned container tags (`ghcr.io/cdcgov/irma:v1.3.5` and `staphb/vadr:1.7`). VADR influenza models are independently pinned to model release `1.7-1` and archive SHA-256 `5f09b8d95413251499a2e49a0b93ea119bc96814b4742d92ba55fd3bdadac7ec`; GenoFLU and other primary workflow tools use pinned Conda package versions to improve reproducibility.
 
 Recommended `.gitignore` entries:
 
@@ -1102,6 +1167,7 @@ data/*.fq
 data/*.fq.gz
 resources/fluA_reference.fasta.zip
 resources/flu_db/
+resources/vadr-models/
 *.log
 .DS_Store
 ```
