@@ -55,3 +55,41 @@ tmp/
 
 # Downloaded VADR influenza models
 resources/vadr-models/
+
+# WINGS manuscript / sensitivity-analysis generated files
+fastq_manifest.csv
+
+analysis/final/secondary_analyses/rarefaction_manifest.csv
+analysis/final/secondary_analyses/run_seqkit_rarefaction.sh
+analysis/final/secondary_analyses/rarefaction_fastq/
+analysis/final/secondary_analyses/rarefaction_wings_segment_results.csv
+
+# Generated secondary-analysis outputs
+analysis/final/secondary_analyses/*.csv
+analysis/final/secondary_analyses/*.xlsx
+analysis/final/secondary_analyses/*.tiff
+analysis/final/secondary_analyses/*.png
+analysis/final/secondary_analyses/per_position_depth/
+
+# R local session files
+.RData
+.Rhistory
+
+# Local metadata backups/copies
+metadata_original.tsv
+metadata_with_pair_id copy.tsv
+
+# Local manuscript analysis
+00_setup.R
+01_extract_WINGS_final_analysis_data.R
+02_create_WINGS_final_analysis_workbook.R
+03_workbook_novel_analyses.R
+04_rarefaction_design_and_analysis.R
+05_bam_coverage_full_length.R
+metadata_with_pair_id.tsv
+metadata_original.tsv
+metadata_with_pair_id copy.tsv
+fastq_manifest.csv
+analysis/
+.RData
+.Rhistory
