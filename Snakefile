@@ -1,8 +1,9 @@
 ################################################################################
 # Avian influenza Nanopore workflow
 #
-# FASTQ -> NanoPlot -> Porechop -> fastplong -> IRMA -> coverage filtering
-#       -> Medaka consensus/VCF -> BLAST -> summary -> H5N1 screen -> GenoFLU
+#                             -> NanoPlot (raw-read QC; enabled by default)
+# FASTQ -> Porechop -> fastplong -> IRMA -> coverage filtering
+#       -> Medaka consensus/VCF -> BLAST -> VADR -> summary -> H5N1 screen -> GenoFLU
 #
 # The workflow is architecture-neutral. Tool portability is controlled through
 # Conda environments plus an IRMA runtime that can use Apptainer/Singularity on
@@ -177,6 +178,9 @@ MEDAKA_FAIL_SOFT = as_bool(config.get("medaka_fail_soft", True))
 NANOPLOT_INSTALL_CHROME = as_bool(
     config.get("nanoplot_install_chrome", True)
 )
+# Include NanoPlot raw-read QC in the default rule-all workflow.
+# Set run_nanoplot: false in config.yaml to disable it.
+RUN_NANOPLOT = as_bool(config.get("run_nanoplot", True))
 RUN_GENOFLU = as_bool(config.get("run_genoflu", True))
 RUN_VADR = as_bool(config.get("run_vadr", True))
 RUN_SUMMARY = as_bool(config.get("run_summary", True))
@@ -357,6 +361,14 @@ FINAL_TARGETS = [
         sample=SAMPLES,
     ),
 ]
+
+if RUN_NANOPLOT:
+    FINAL_TARGETS.extend(
+        expand(
+            f"{RESULTS}/{{sample}}/nanoplot/done.txt",
+            sample=SAMPLES,
+        )
+    )
 
 if RUN_GENOFLU:
     FINAL_TARGETS.extend(
