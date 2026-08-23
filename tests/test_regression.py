@@ -172,7 +172,7 @@ def test_blast_summary_four_states(tmp_path):
     assert rows["NA"]["query_coverage"] == "88.889"
 
 
-def test_sample_summary_candidate_and_h5n1_review_flags(tmp_path):
+def test_sample_summary_candidate_and_h5_review_flags(tmp_path):
     mod = load_module("sample_summary", "scripts/sample_summary.py")
     output = tmp_path / "summary.tsv"
 
@@ -214,15 +214,15 @@ def test_sample_summary_candidate_and_h5n1_review_flags(tmp_path):
         fastplong=fastplong,
         coverage_rows=coverage_rows,
         blast_hits={"HA": "ACC_HA", "NA": "SKIPPED_QC"},
-        h5n1_status="INDETERMINATE",
-        genoflu_status="H5N1_INDETERMINATE",
+        h5_status="INDETERMINATE",
+        genoflu_status="H5_OR_NA_INDETERMINATE",
         consensus_segments=1,
     )
 
     row = read_one_tsv(output)
     flags = set(row["review_flags"].split(";"))
 
-    assert "h5n1_screen_indeterminate" in flags
+    assert "h5_screen_indeterminate" in flags
     assert "coverage_failures" in flags
     assert "multiple_irma_candidates" in flags
     assert row["multiple_irma_candidate_segments"] == "HA"
@@ -264,8 +264,8 @@ def test_sample_summary_not_detected_is_not_itself_review_flag(tmp_path):
         fastplong=fastplong,
         coverage_rows=coverage_rows,
         blast_hits={"HA": "ACC_HA", "NA": "ACC_NA"},
-        h5n1_status="NOT_DETECTED",
-        genoflu_status="H5N1_NOT_DETECTED",
+        h5_status="NOT_DETECTED",
+        genoflu_status="H5_NOT_DETECTED",
         consensus_segments=8,
     )
 
@@ -346,7 +346,7 @@ def test_sample_summary_preserves_metadata_and_protects_analytical_fields(tmp_pa
         fastplong=fastplong,
         coverage_rows=coverage_rows,
         blast_hits={"HA": "ACC_HA", "NA": "ACC_NA"},
-        h5n1_status="DETECTED",
+        h5_status="DETECTED",
         genoflu_status="COMPLETED",
         consensus_segments=8,
         metadata=metadata,
@@ -365,4 +365,4 @@ def test_sample_summary_preserves_metadata_and_protects_analytical_fields(tmp_pa
 
     # Metadata cannot overwrite WINGS analytical fields.
     assert row["metadata_review_flags"] == "metadata_must_not_override_analysis"
-    assert row["review_flags"] == "h5n1_screen_detected"
+    assert row["review_flags"] == "h5_screen_detected"

@@ -3,7 +3,7 @@
 #
 #                             -> NanoPlot (raw-read QC; enabled by default)
 # FASTQ -> Porechop -> fastplong -> IRMA -> coverage filtering
-#       -> Medaka consensus/VCF -> BLAST -> VADR -> summary -> H5N1 screen -> GenoFLU
+#       -> Medaka consensus/VCF -> BLAST -> VADR -> summary -> H5+NA screen -> GenoFLU
 #
 # The workflow is architecture-neutral. Tool portability is controlled through
 # Conda environments plus an IRMA runtime that can use Apptainer/Singularity on
@@ -1433,24 +1433,25 @@ rule concat_consensus:
 
 
 # -----------------------------------------------------------------------------
-# H5N1 screen
+# H5 + QC-passing NA screen
 #
-# This is an IRMA-supported H5/N1 screening criterion, not an independent
-# definitive subtype call. It reports DETECTED only when QC-passing HA and NA
-# are identified as H5 and N1, NOT_DETECTED when QC-passing HA/NA evidence is
-# informative but does not meet that criterion, and INDETERMINATE when HA or NA
-# lacks sufficient QC-qualified evidence for a biological negative.
+# GenoFLU eligibility is based on a QC-passing H5 HA together with a
+# QC-passing, subtype-resolved NA segment of any neuraminidase subtype.
+# The NA subtype is retained for reporting but does not need to be N1.
+# DETECTED means the sample is eligible for GenoFLU; NOT_DETECTED means HA and
+# NA are both informative but HA is not H5; INDETERMINATE means HA or NA lacks
+# sufficient QC-qualified evidence.
 # -----------------------------------------------------------------------------
-rule detect_h5n1:
+rule detect_h5_with_na:
     input:
         ha_flag=f"{RESULTS}/{{sample}}/coverage_flags/HA.flag",
         na_flag=f"{RESULTS}/{{sample}}/coverage_flags/NA.flag",
         ha_stats=f"{RESULTS}/{{sample}}/coverage_stats/HA.tsv",
         na_stats=f"{RESULTS}/{{sample}}/coverage_stats/NA.tsv"
     output:
-        flag=f"{RESULTS}/{{sample}}/genoflu/h5n1.flag"
+        flag=f"{RESULTS}/{{sample}}/genoflu/h5.flag"
     log:
-        f"{RESULTS}/{{sample}}/genoflu/detect_h5n1.log"
+        f"{RESULTS}/{{sample}}/genoflu/detect_h5_with_na.log"
     params:
         threshold=COVERAGE_MIN,
         min_breadth=COVERAGE_MIN_BREADTH,
@@ -1479,25 +1480,37 @@ rule detect_h5n1:
         na_contig = selected_contig(input.na_stats)
 
         is_h5 = ha_contig.startswith("A_HA_H5")
-        is_n1 = na_contig.startswith("A_NA_N1")
-        ha_informative = ha_status == "PASS" and ha_contig not in {"", "NA", "MISSING"}
-        na_informative = na_status == "PASS" and na_contig not in {"", "NA", "MISSING"}
+        ha_informative = (
+            ha_status == "PASS"
+            and ha_contig not in {"", "NA", "MISSING"}
+        )
+        na_informative = (
+            na_status == "PASS"
+            and na_contig not in {"", "NA", "MISSING"}
+            and na_contig.startswith("A_NA_N")
+        )
 
         if not ha_informative or not na_informative:
             screen_status = "INDETERMINATE"
             reasons = []
             if not ha_informative:
-                reasons.append(f"HA_not_informative(status={ha_status},contig={ha_contig})")
+                reasons.append(
+                    f"HA_not_informative(status={ha_status},contig={ha_contig})"
+                )
             if not na_informative:
-                reasons.append(f"NA_not_informative(status={na_status},contig={na_contig})")
+                reasons.append(
+                    f"NA_not_informative_or_unresolved(status={na_status},contig={na_contig})"
+                )
             screen_reason = ";".join(reasons)
-        elif is_h5 and is_n1:
+        elif is_h5:
             screen_status = "DETECTED"
-            screen_reason = "QC-passing H5-associated HA and N1-associated NA detected"
+            screen_reason = (
+                "QC-passing H5-associated HA and QC-passing subtype-resolved NA detected"
+            )
         else:
             screen_status = "NOT_DETECTED"
             screen_reason = (
-                "QC-passing HA and NA were informative but did not jointly meet the H5N1 screening criterion"
+                "QC-passing HA and NA were informative, but HA was not identified as H5"
             )
 
         output_path = Path(str(output.flag))
@@ -1514,11 +1527,12 @@ rule detect_h5n1:
             f"HA_status={ha_status}\n"
             f"HA_selected_contig={ha_contig}\n"
             f"HA_informative={ha_informative}\n"
+            f"HA_is_H5={is_h5}\n"
             f"NA_status={na_status}\n"
             f"NA_selected_contig={na_contig}\n"
             f"NA_informative={na_informative}\n"
-            f"H5N1_screen={screen_status}\n"
-            f"H5N1_reason={screen_reason}\n"
+            f"H5_with_NA_screen={screen_status}\n"
+            f"H5_with_NA_reason={screen_reason}\n"
         )
 
 
@@ -1531,7 +1545,7 @@ rule sample_summary:
         fastplong=f"{RESULTS}/{{sample}}/fastplong/report.json",
         coverage=f"{RESULTS}/{{sample}}/coverage/coverage.tsv",
         blast=f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv",
-        h5n1=f"{RESULTS}/{{sample}}/genoflu/h5n1.flag",
+        h5=f"{RESULTS}/{{sample}}/genoflu/h5.flag",  # compatibility key; H5+NA gate
         genoflu=optional_genoflu_input,
         consensus=f"{RESULTS}/{{sample}}/merged/consensus_all_segments.fasta"
     output:
@@ -1746,11 +1760,11 @@ rule run_summary_html:
 
 
 # -----------------------------------------------------------------------------
-# GenoFLU, gated by the H5N1 screen
+# GenoFLU, gated by QC-passing H5 HA plus a QC-passing resolved NA subtype
 # -----------------------------------------------------------------------------
 rule genoflu:
     input:
-        flag=f"{RESULTS}/{{sample}}/genoflu/h5n1.flag",
+        flag=f"{RESULTS}/{{sample}}/genoflu/h5.flag",
         fasta=f"{RESULTS}/{{sample}}/merged/consensus_all_segments.fasta",
         summary=f"{RESULTS}/{{sample}}/summary/blast_top_hits.csv"
     output:
@@ -1764,26 +1778,27 @@ rule genoflu:
         set -euo pipefail
         mkdir -p "$(dirname {output.tsv:q})"
 
-        h5n1_status="$(tr -d '\r\n' < {input.flag:q})"
+        h5_status="$(tr -d '\r\n' < {input.flag:q})"
 
-        if [[ "$h5n1_status" == "DETECTED" ]]; then
+        if [[ "$h5_status" == "DETECTED" ]]; then
             fasta_dir="$(dirname {input.fasta:q})"
             fasta_base="$(basename {input.fasta:q})"
             (
                 cd "$fasta_dir"
                 genoflu.py -f "$fasta_base"
             ) | tee {log:q} > {output.tsv:q}
-        elif [[ "$h5n1_status" == "NOT_DETECTED" ]]; then
-            printf "sample\tstatus\n%s\tH5N1_NOT_DETECTED\n" {wildcards.sample:q} \
+        elif [[ "$h5_status" == "NOT_DETECTED" ]]; then
+            printf "sample\tstatus\n%s\tH5_NOT_DETECTED\n" {wildcards.sample:q} \
               | tee {log:q} > {output.tsv:q}
-        elif [[ "$h5n1_status" == "INDETERMINATE" ]]; then
-            printf "sample\tstatus\n%s\tH5N1_INDETERMINATE\n" {wildcards.sample:q} \
+        elif [[ "$h5_status" == "INDETERMINATE" ]]; then
+            printf "sample\tstatus\n%s\tH5_OR_NA_INDETERMINATE\n" {wildcards.sample:q} \
               | tee {log:q} > {output.tsv:q}
         else
-            echo "Unexpected H5N1 screen status: '$h5n1_status'" > {log:q}
+            echo "Unexpected H5+NA screen status: '$h5_status'" > {log:q}
             exit 1
         fi
         """
+
 # -----------------------------------------------------------------------------
 # Run-level provenance
 # -----------------------------------------------------------------------------

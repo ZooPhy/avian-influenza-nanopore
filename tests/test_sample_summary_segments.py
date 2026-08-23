@@ -37,7 +37,7 @@ def test_segments_detected_excludes_missing_segment(tmp_path):
         fastplong={},
         coverage_rows=coverage_rows,
         blast_hits={},
-        h5n1_status="NOT_DETECTED",
+        h5_status="NOT_DETECTED",
         genoflu_status="DISABLED_BY_CONFIG",
         consensus_segments=7,
         metadata={},

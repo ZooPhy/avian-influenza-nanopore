@@ -176,27 +176,27 @@ if medaka_review_notes:
         review_text = review_text + "; " + "; ".join(medaka_review_notes)
     review_status = "status-warning"
 
-h5n1_status = str(row["h5n1_screen"]).strip().upper()
-# Backward-compatible display for older reports. A legacy FAIL is treated as
-# indeterminate because the old binary screen did not distinguish QC failure
-# from a true negative.
-if h5n1_status == "PASS":
-    h5n1_status = "DETECTED"
-elif h5n1_status == "FAIL":
-    h5n1_status = "INDETERMINATE"
+# Current reports use h5_screen. Fall back to h5n1_screen only when rendering
+# an older WINGS result produced before the H5/NA gate was generalized.
+h5_field = "h5_screen" if "h5_screen" in row.index else "h5n1_screen"
+h5_status = str(row[h5_field]).strip().upper()
+if h5_status == "PASS":
+    h5_status = "DETECTED"
+elif h5_status == "FAIL":
+    h5_status = "INDETERMINATE"
 
-if h5n1_status == "DETECTED":
-    h5n1_badge = "DETECTED"
-    h5n1_class = "status-warning"
-    h5n1_detail = "QC-qualified H5 and N1 screening criterion met"
-elif h5n1_status == "NOT_DETECTED":
-    h5n1_badge = "NOT DETECTED"
-    h5n1_class = "status-pass"
-    h5n1_detail = "QC-qualified HA/NA evidence does not meet the H5N1 criterion"
+if h5_status == "DETECTED":
+    h5_badge = "DETECTED"
+    h5_class = "status-warning"
+    h5_detail = "QC-passing H5 HA plus a QC-passing resolved NA segment detected"
+elif h5_status == "NOT_DETECTED":
+    h5_badge = "NOT DETECTED"
+    h5_class = "status-pass"
+    h5_detail = "QC-passing HA and resolved NA are present, but the HA is not H5"
 else:
-    h5n1_badge = "INDETERMINATE"
-    h5n1_class = "status-warning"
-    h5n1_detail = "Insufficient QC-qualified HA/NA evidence for a biological negative"
+    h5_badge = "INDETERMINATE"
+    h5_class = "status-warning"
+    h5_detail = "HA or NA lacks sufficient QC-qualified evidence for GenoFLU eligibility"
 
 segments_pass = int(row["segments_pass"])
 segment_class = (
@@ -251,14 +251,14 @@ header_html = f"""
 
 <div class="metric-grid">
   <div class="metric-card">
-    <div class="metric-label">H5N1 screen</div>
+    <div class="metric-label">H5 + NA screen</div>
     <div class="metric-value">
-      <span class="status-badge {h5n1_class}">
-        {h5n1_badge}
+      <span class="status-badge {h5_class}">
+        {h5_badge}
       </span>
     </div>
     <div class="metric-detail">
-      {h5n1_detail}
+      {h5_detail}
     </div>
   </div>
 
@@ -362,7 +362,7 @@ overview = pd.DataFrame(
             "Segments passing segment QC",
             "Consensus segments",
             "Medaka provenance",
-            "H5N1 screen",
+            "H5 + NA screen",
             "GenoFLU status",
             "Review flags",
         ],
@@ -375,7 +375,7 @@ overview = pd.DataFrame(
                 f"{len(medaka_fallback_segments)} IRMA fallback"
                 if medaka_status_recorded else "Not recorded"
             ),
-            h5n1_status,
+            h5_status,
             row["genoflu_status"],
             review_text,
         ],
@@ -588,14 +588,14 @@ subtype_table = pd.DataFrame(
             "NA contig",
             "HA median depth",
             "NA median depth",
-            "H5N1 screen",
+            "H5 + NA screen",
         ],
         "Value": [
             display_unknown(row["ha_contig"]),
             display_unknown(row["na_contig"]),
             row["ha_median_depth"],
             row["na_median_depth"],
-            h5n1_status,
+            h5_status,
         ],
     }
 )
@@ -748,15 +748,15 @@ def parse_genoflu_report(path):
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) == 2 and lines[0].startswith("sample\tstatus"):
         gate_status = lines[1].split("\t", 1)[-1].strip()
-        if gate_status == "H5N1_NOT_DETECTED":
+        if gate_status in {"H5_NOT_DETECTED", "H5N1_NOT_DETECTED"}:
             result["status"] = "Not run"
-            result["reason"] = "GenoFLU was not run because the H5N1 screen was NOT_DETECTED."
-        elif gate_status == "H5N1_INDETERMINATE":
+            result["reason"] = "GenoFLU was not run because the QC-passing HA was not H5."
+        elif gate_status in {"H5_OR_NA_INDETERMINATE", "H5N1_INDETERMINATE"}:
             result["status"] = "Not run"
-            result["reason"] = "GenoFLU was not run because the H5N1 screen was INDETERMINATE."
+            result["reason"] = "GenoFLU was not run because QC-qualified H5/NA eligibility was indeterminate."
         else:
             result["status"] = gate_status
-            result["reason"] = "GenoFLU was gated by the H5N1 screening result."
+            result["reason"] = "GenoFLU was gated by the H5 + NA eligibility result."
         return result
 
     threshold_match = re.search(r"pident_threshold:\s*([0-9.]+)", text)
@@ -857,7 +857,7 @@ summary_line = " · ".join(summary_bits)
 
 if status_text.lower() == "not run":
     result_text = str(genoflu["reason"])
-    interpretation_text = "GenoFLU gating follows the three-state H5N1 screen; no genotype call is implied."
+    interpretation_text = "GenoFLU gating requires a QC-passing H5 HA plus a QC-passing resolved NA segment; no genotype call is implied when that requirement is not met."
 elif status_text.lower() == "not assigned":
     submitted_count = input_count if input_count is not None else len(genoflu["calls"])
     matched_count = matched if matched is not None else len(genoflu["calls"])
@@ -1391,15 +1391,20 @@ else:
         "segments passed the configured segment QC criteria."
     )
 
-if row["h5n1_screen"] == "PASS":
+if h5_status == "DETECTED":
     interpretation.append(
-        "The sample met the pipeline's IRMA-supported "
-        "H5N1 screening criterion."
+        "The sample has a QC-passing H5 HA and a QC-passing resolved NA segment "
+        "and therefore meets the GenoFLU eligibility criterion."
+    )
+elif h5_status == "NOT_DETECTED":
+    interpretation.append(
+        "The sample has QC-passing HA and NA evidence, but the HA is not H5; "
+        "GenoFLU was therefore not eligible to run."
     )
 else:
     interpretation.append(
-        "The sample did not meet the pipeline's "
-        "H5N1 screening criterion."
+        "The H5 + NA eligibility result is indeterminate because QC-qualified "
+        "HA or NA evidence is insufficient."
     )
 
 if str(row["failed_segment_names"]) != "NONE":
@@ -1429,4 +1434,4 @@ display(
 )
 ```
 
-> **Interpretation note:** The H5N1 result is an IRMA-supported analytical screening flag. It is not an independent confirmatory subtype test and should be interpreted with coverage, controls, sequence quality, and other samples from the sequencing run.
+> **Interpretation note:** The H5 + NA result is an analytical eligibility flag for GenoFLU. DETECTED requires a QC-passing H5 HA plus a QC-passing resolved NA segment of any subtype. The NA subtype is reported independently and is not restricted to N1.

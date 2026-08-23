@@ -24,8 +24,8 @@ Most tools run in rule-specific Conda environments. IRMA runs in a container sel
 - Segment-level QC using depth, breadth-at-depth, expected-length, and N-content criteria
 - Medaka consensus polishing and variant calling
 - BLAST-based segment identification with identity/query-coverage evidence and confidence classification
-- H5N1 analytical screening
-- Conditional GenoFLU genotype assignment for H5N1-screen-positive samples
+- H5Nx analytical screening
+- Conditional GenoFLU genotype assignment for H5Nx-screen-positive samples
 - VADR sequence annotation and validation
 - Interactive sample-level HTML reports
 - Interactive sequencing-run summary report
@@ -69,10 +69,10 @@ Segment-level QC
     +--> BLAST segment identification
     |        |
     |        v
-    |    H5N1 screening
+    |    H5Nx screening
     |        |
     |        +--> GenoFLU genotype assignment
-    |             (only when the H5N1 screen is DETECTED)
+    |             (only when the H5Nx screen is DETECTED)
     |
     +--> VADR annotation and validation
          (from segment-QC-qualified polished consensuses)
@@ -750,7 +750,7 @@ results/<sample>/medaka/<segment>/variants.vcf
 results/<sample>/blast/<segment>.blast.txt
 results/<sample>/summary/blast_top_hits.csv
 results/<sample>/merged/consensus_all_segments.fasta
-results/<sample>/genoflu/h5n1.flag
+results/<sample>/genoflu/h5.flag
 results/<sample>/genoflu/GenoFLU.tsv
 results/<sample>/vadr/<sample>.vadr.log
 results/<sample>/summary/<sample>.sample_summary.tsv
@@ -797,7 +797,7 @@ For a formal reproducible analysis, generate provenance from a clean committed r
 
 ### Sample report
 
-Each sample report summarizes validated sample metadata, read filtering, segment recovery, coverage, BLAST assignments, H5N1 screening, GenoFLU results when applicable, VADR status, and review flags. Reports are generated as self-contained HTML and are also packaged into the portable `.wings` bundle for browser-based navigation.
+Each sample report summarizes validated sample metadata, read filtering, segment recovery, coverage, BLAST assignments, H5Nx screening, GenoFLU results when applicable, VADR status, and review flags. Reports are generated as self-contained HTML and are also packaged into the portable `.wings` bundle for browser-based navigation.
 
 Build one sample report with:
 
@@ -944,16 +944,16 @@ BLAST summary states are:
 
 The BLAST database provenance is recorded in `resources/flu_db/database_manifest.tsv` and is incorporated into the run-level provenance record.
 
-## H5N1 screening
+## H5Nx screening
 
-The H5N1 rule is a screening criterion based on IRMA-supported HA and NA assignments and segment coverage. It requires:
+The H5Nx rule is a screening criterion based on IRMA-supported HA and NA assignments and segment QC. It requires:
 
 - an H5-associated HA assignment
-- an N1-associated NA assignment
+- a subtype-resolved NA assignment of any N subtype (for example, N1, N2, N5, N6, or N8)
 - passing HA segment QC
 - passing NA segment QC
 
-The H5N1 screen uses three states: `DETECTED` when QC-qualified HA and NA evidence supports H5 and N1; `NOT_DETECTED` when QC-qualified informative HA/NA evidence does not meet the H5+N1 criterion; and `INDETERMINATE` when HA or NA evidence is missing or does not pass segment QC. `DETECTED` is an analytical screening flag rather than an independent confirmatory subtype test. GenoFLU is run only for `DETECTED` samples.
+The H5Nx screen uses three states. `DETECTED` means the HA segment passes QC and is identified as H5, and the NA segment also passes QC with an informative NA subtype assignment. The NA subtype is retained and reported but is not restricted to N1. `NOT_DETECTED` means the QC-qualified HA evidence is informative and indicates a non-H5 subtype. `INDETERMINATE` means the HA evidence is not sufficiently QC-qualified to determine H5 status, or an H5 HA is present but the NA segment is missing, fails QC, or lacks an informative subtype assignment. `DETECTED` is an analytical screening flag rather than an independent confirmatory subtype test. GenoFLU is run only for `DETECTED` H5Nx samples.
 
 ## Troubleshooting
 

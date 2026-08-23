@@ -63,7 +63,7 @@ def read_blast(path: Path) -> dict[str, str]:
     return hits
 
 
-def read_h5n1_flag(path: Path) -> str:
+def read_h5_flag(path: Path) -> str:
     if not path.exists():
         return "MISSING"
     status = path.read_text().strip().upper() or "MISSING"
@@ -115,7 +115,7 @@ def write_summary(
     fastplong: dict,
     coverage_rows: list[dict],
     blast_hits: dict[str, str],
-    h5n1_status: str,
+    h5_status: str,
     genoflu_status: str,
     consensus_segments: int,
     metadata: dict[str, str] | None = None,
@@ -165,13 +165,14 @@ def write_summary(
     if len(pass_segments) < 8:
         review_flags.append("fewer_than_8_pass_segments")
 
-    # A valid NOT_DETECTED screen is not itself a QC problem. DETECTED warrants
-    # attention as a surveillance finding, while INDETERMINATE warrants review
-    # because a biological negative cannot be supported from the available HA/NA QC.
-    if h5n1_status == "DETECTED":
-        review_flags.append("h5n1_screen_detected")
-    elif h5n1_status != "NOT_DETECTED":
-        review_flags.append("h5n1_screen_indeterminate")
+    # A valid NOT_DETECTED H5 eligibility result is not itself a QC problem.
+    # DETECTED warrants attention as an H5 surveillance finding. INDETERMINATE
+    # warrants review because QC-passing HA plus a resolved QC-passing NA are
+    # required before GenoFLU is eligible to run.
+    if h5_status == "DETECTED":
+        review_flags.append("h5_screen_detected")
+    elif h5_status != "NOT_DETECTED":
+        review_flags.append("h5_screen_indeterminate")
 
     if failed_segments:
         review_flags.append("coverage_failures")
@@ -205,7 +206,7 @@ def write_summary(
         "na_contig",
         "ha_median_depth",
         "na_median_depth",
-        "h5n1_screen",
+        "h5_screen",
         "genoflu_status",
         "consensus_segments",
         "multiple_irma_candidate_segments",
@@ -245,7 +246,7 @@ def write_summary(
     "na_contig": na_contig,
     "ha_median_depth": ha_median_depth,
     "na_median_depth": na_median_depth,
-    "h5n1_screen": h5n1_status,
+    "h5_screen": h5_status,
     "genoflu_status": genoflu_status,
     "consensus_segments": consensus_segments,
     "multiple_irma_candidate_segments": ",".join(multiple_candidate_segments) or "NONE",
@@ -268,7 +269,11 @@ def main() -> None:
     fastplong = read_fastplong_json(Path(snakemake.input.fastplong))
     coverage_rows = read_coverage(Path(snakemake.input.coverage))
     blast_hits = read_blast(Path(snakemake.input.blast))
-    h5n1_status = read_h5n1_flag(Path(snakemake.input.h5n1))
+    h5_input = getattr(snakemake.input, "h5", None)
+    if h5_input is None:
+        # Temporary compatibility with Snakefiles that still name this input "h5n1".
+        h5_input = getattr(snakemake.input, "h5n1")
+    h5_status = read_h5_flag(Path(h5_input))
     genoflu_status = read_genoflu(Path(snakemake.input.genoflu))
     consensus_segments = count_fasta_records(Path(snakemake.input.consensus))
 
@@ -278,7 +283,7 @@ def main() -> None:
         fastplong=fastplong,
         coverage_rows=coverage_rows,
         blast_hits=blast_hits,
-        h5n1_status=h5n1_status,
+        h5_status=h5_status,
         genoflu_status=genoflu_status,
         consensus_segments=consensus_segments,
         metadata=metadata,
